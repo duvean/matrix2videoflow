@@ -1,10 +1,10 @@
 import cv2
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                                QListWidget, QScrollArea, QLabel, QPushButton,
-                               QFileDialog, QSplitter)
+                               QFileDialog, QSplitter, QGroupBox, QFormLayout, QSpinBox)
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtCore import Qt
-
+from pathlib import Path
 from core import VideoProcessor, ProjectModel, BatchData
 
 
@@ -23,6 +23,33 @@ class FrameWidget(QLabel):
         self.setPixmap(QPixmap.fromImage(q_img))
 
 
+class ExportSettings(QGroupBox):
+    def __init__(self):
+        super().__init__("Настройки экспорта")
+        self.layout = QFormLayout(self)
+
+        # Настройка FPS
+        self.fps_spin = QSpinBox()
+        self.fps_spin.setRange(1, 120)
+        self.fps_spin.setValue(32)
+        self.layout.addRow("Целевой FPS:", self.fps_spin)
+
+        # Список шагов интерполяции
+        self.interp_steps = QListWidget()
+        self.layout.addRow("Цепочка интерполяции:", self.interp_steps)
+
+        # Кнопки управления шагами
+        btn_layer = QHBoxLayout()
+        self.add_film_btn = QPushButton("+ FILM")
+        self.add_cv_btn = QPushButton("+ OpenCV")
+        self.clear_btn = QPushButton("Сброс")
+
+        btn_layer.addWidget(self.add_film_btn)
+        btn_layer.addWidget(self.add_cv_btn)
+        btn_layer.addWidget(self.clear_btn)
+        self.layout.addRow(btn_layer)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -36,47 +63,83 @@ class MainWindow(QMainWindow):
     def init_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
-        layout = QVBoxLayout(central)
+        main_layout = QVBoxLayout(central)
 
-        # Сплиттер для списка батчей и превью
-        splitter = QSplitter(Qt.Horizontal)
+        # 1. ГЛАВНЫЙ СПЛИТТЕР (Горизонтальный: Список | Превью | Настройки)
+        self.main_splitter = QSplitter(Qt.Horizontal)
 
+        # Левая часть: Список батчей
         self.batch_list = QListWidget()
+
+        # Центральная часть: Превью
         self.preview = QLabel("Выберите кадр для превью")
         self.preview.setAlignment(Qt.AlignCenter)
-        self.preview.setStyleSheet("background: black; color: gray; font-size: 18px;")
+        self.preview.setStyleSheet("background: black; color: gray; font-size: 18px; border: 2px solid #333;")
+        self.preview.setMinimumWidth(400)
 
-        splitter.addWidget(self.batch_list)
-        splitter.addWidget(self.preview)
-        splitter.setStretchFactor(1, 3)
+        # Правая часть: Настройки (создаем отдельный виджет-контейнер)
+        self.settings_panel = QGroupBox("Настройки экспорта")
+        settings_layout = QFormLayout(self.settings_panel)
 
-        layout.addWidget(splitter)
+        self.fps_spin = QSpinBox()
+        self.fps_spin.setRange(1, 120)
+        self.fps_spin.setValue(32)
+        settings_layout.addRow("FPS:", self.fps_spin)
 
-        # Таймлайн
+        self.interp_steps = QListWidget()
+        self.interp_steps.setMaximumHeight(150)
+        settings_layout.addRow("Цепочка:", self.interp_steps)
+
+        add_btns = QHBoxLayout()
+        self.btn_add_film = QPushButton("+ FILM")
+        self.btn_add_cv = QPushButton("+ CV")
+        self.btn_clear_steps = QPushButton("Clear")
+        add_btns.addWidget(self.btn_add_film)
+        add_btns.addWidget(self.btn_add_cv)
+        add_btns.addWidget(self.btn_clear_steps)
+        settings_layout.addRow(add_btns)
+
+        # Добавляем всё в сплиттер
+        self.main_splitter.addWidget(self.batch_list)
+        self.main_splitter.addWidget(self.preview)
+        self.main_splitter.addWidget(self.settings_panel)
+
+        # Настраиваем пропорции (0 - батчи, 1 - превью, 2 - настройки)
+        self.main_splitter.setStretchFactor(0, 1)
+        self.main_splitter.setStretchFactor(1, 3)
+        self.main_splitter.setStretchFactor(2, 1)
+
+        # 2. ТАЙМЛАЙН (Нижняя часть)
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFixedHeight(180)
-
         self.timeline_container = QWidget()
         self.timeline_layout = QHBoxLayout(self.timeline_container)
         self.timeline_layout.setAlignment(Qt.AlignLeft)
         self.scroll.setWidget(self.timeline_container)
 
-        layout.addWidget(self.scroll)
+        # 3. КНОПКИ ДЕЙСТВИЙ (Самый низ)
+        action_btns = QHBoxLayout()
+        btn_load = QPushButton("Добавить батчи (.jfif)")
+        btn_load.clicked.connect(self.load_images)
 
-        # Кнопки
-        btns = QHBoxLayout()
-        btn_add = QPushButton("Добавить батчи (.jfif)")
-        btn_add.clicked.connect(self.load_images)
+        self.btn_export = QPushButton("Экспортировать видео")
+        self.btn_export.clicked.connect(self.export_video)
+        self.btn_export.setStyleSheet("background-color: #2b5e2b; color: white; padding: 5px;")
 
-        btn_export = QPushButton("Экспортировать видео (MP4)")
-        btn_export.clicked.connect(self.export_video)
-        btn_export.setStyleSheet("background-color: #2b5e2b; color: white; font-weight: bold;")
+        action_btns.addWidget(btn_load)
+        action_btns.addStretch()
+        action_btns.addWidget(self.btn_export)
 
-        btns.addWidget(btn_add)
-        btns.addStretch()
-        btns.addWidget(btn_export)
-        layout.addLayout(btns)
+        # Собираем всё в главный вертикальный слой
+        main_layout.addWidget(self.main_splitter, stretch=1)  # Сплиттер занимает всё свободное место
+        main_layout.addWidget(self.scroll)
+        main_layout.addLayout(action_btns)
+
+        # Подключаем кнопки настроек
+        self.btn_add_film.clicked.connect(lambda: self.interp_steps.addItem("film"))
+        self.btn_add_cv.clicked.connect(lambda: self.interp_steps.addItem("opencv"))
+        self.btn_clear_steps.clicked.connect(self.interp_steps.clear)
 
     def load_images(self):
         files, _ = QFileDialog.getOpenFileNames(self, "Выбор батчей", "", "Images (*.jfif *.jpg *.png)")
@@ -86,7 +149,7 @@ class MainWindow(QMainWindow):
             frames = self.processor.split_batch(f)
             if not frames: continue
 
-            self.batch_list.addItem(f.split('/')[-1])
+            self.batch_list.addItem(Path(f).name)
 
             for img in frames:
                 self.all_frames.append(img)
@@ -106,28 +169,24 @@ class MainWindow(QMainWindow):
     def export_video(self):
         if not self.all_frames: return
 
-        save_path, _ = QFileDialog.getSaveFileName(self, "Сохранить видео", "output_film.mp4", "Video (*.mp4)")
+        # Читаем настройки из UI
+        pipeline = [self.interp_steps.item(i).text() for i in range(self.interp_steps.count())]
+        target_fps = self.fps_spin.value()
+        save_path, _ = QFileDialog.getSaveFileName(self, "Экспорт", "output.mp4", "Video (*.mp4)")
+
         if not save_path: return
 
-        h, w, _ = self.all_frames[0].shape
+        # 1. Сначала подготавливаем все кадры (включая интерполяцию)
+        print(f"Обработка интерполяции: {pipeline}...")
+        final_frames = self.processor.process_sequence(self.all_frames, pipeline)
 
-        new_fps = 32.0
+        # 2. Записываем в файл
+        h, w, _ = final_frames[0].shape
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(save_path, fourcc, new_fps, (w, h))
+        out = cv2.VideoWriter(save_path, fourcc, float(target_fps), (w, h))
 
-        prev_frame = None
-
-        print("Запуск рендеринга с интерполяцией FILM...")
-
-        for curr_frame in self.all_frames:
-            if prev_frame is not None:
-                # Генерируем промежуточный кадр через FILM
-                mid_frame = self.processor.interpolate_film(prev_frame, curr_frame)
-                out.write(mid_frame)
-
-            # Пишем основной кадр
-            out.write(curr_frame)
-            prev_frame = curr_frame.copy()
+        for f in final_frames:
+            out.write(f)
 
         out.release()
-        print("Экспорт завершен успешно.")
+        print(f"Готово! Итого кадров: {len(final_frames)}")

@@ -22,6 +22,9 @@ class VideoProcessor(QObject):
             print(f"FILM error: {e}")
             self.film_available = False
 
+    def interpolate_opencv(self, f1, f2):
+        return cv2.addWeighted(f1, 0.5, f2, 0.5, 0)
+
     def interpolate_film(self, frame1, frame2):
         if not self.film_available:
             return cv2.addWeighted(frame1, 0.5, frame2, 0.5, 0)
@@ -39,7 +42,35 @@ class VideoProcessor(QObject):
         inter_frame = result['image'].numpy()[0]
         return (np.clip(inter_frame * 255.0, 0, 255)).astype(np.uint8)
 
-    def split_batch(self, image_path, grid_size=4):
+    def process_sequence(self, frames, pipeline):
+        """
+        Применяет цепочку интерполяций ко всему массиву кадров.
+        pipeline: список строк ['film', 'opencv']
+        """
+        current_frames = frames
+
+        for step in pipeline:
+            new_sequence = []
+            for i in range(len(current_frames) - 1):
+                f1 = current_frames[i]
+                f2 = current_frames[i + 1]
+
+                # Генерируем промежуточный
+                if step == 'film':
+                    mid = self.interpolate_film(f1, f2)
+                else:
+                    mid = self.interpolate_opencv(f1, f2)
+
+                new_sequence.append(f1)
+                new_sequence.append(mid)
+
+            # Не забываем добавить самый последний кадр
+            new_sequence.append(current_frames[-1])
+            current_frames = new_sequence
+
+        return current_frames
+
+    def split_batch(self, image_path, grid_size=3):
         img = cv2.imread(image_path)
         if img is None: return []
         h, w, _ = img.shape
