@@ -8,8 +8,8 @@ from PySide6.QtWidgets import (
     QFileDialog, QSplitter, QGroupBox, QFormLayout, QSpinBox, QToolButton, QStyle, QFrame,
     QAbstractItemView, QSizePolicy, QStackedWidget, QMenu, QListWidgetItem, QProgressBar, QMessageBox
 )
-from PySide6.QtGui import QImage, QPixmap, QDrag, QAction
-from PySide6.QtCore import Qt, QMimeData, QEvent
+from PySide6.QtGui import QImage, QPixmap, QDrag, QAction, QPainter, QPen, QColor
+from PySide6.QtCore import Qt, QMimeData, QEvent, QTimer, QPoint
 
 from core import VideoProcessor, ProjectManager, Batch
 
@@ -21,10 +21,13 @@ class MaskPreviewLabel(QLabel):
         self.setAlignment(Qt.AlignCenter)
         self.setStyleSheet("background: black; color: gray; font-size: 18px; border: 2px solid #333;")
         self.setMinimumWidth(400)
+        self.setMouseTracking(True)
+
         self.base_img = None
         self.mask = None
         self.edit_mode = False
         self.brush_size = 20
+        self.cursor_pos = QPoint(-1, -1)
 
     def set_content(self, img, mask=None, show_overlay=True):
         self.base_img = img.copy() if img is not None else None
@@ -53,17 +56,35 @@ class MaskPreviewLabel(QLabel):
         q_img = QImage(render.data, w, h, ch * w, QImage.Format_RGB888)
         pixmap = QPixmap.fromImage(q_img).scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self.setPixmap(pixmap)
+        self.update()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._render(self.parent_ui.should_show_mask_overlay())
 
-    def _draw_to_mask(self, pos):
-        if not self.edit_mode or self.base_img is None or self.mask is None:
-            return
-        if self.pixmap() is None or self.pixmap().isNull():
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self.edit_mode or self.base_img is None or self.cursor_pos.x() < 0:
             return
 
+        mapped = self._map_label_to_image(self.cursor_pos)
+        if mapped is None:
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        pen = QPen(QColor(0, 255, 0), 2)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+
+        _, _, scale = mapped
+        radius = max(1, int(self.brush_size * scale))
+        painter.drawEllipse(self.cursor_pos, radius, radius)
+        painter.end()
+
+    def _map_label_to_image(self, pos):
+        if self.base_img is None:
+            return None
         label_w, label_h = self.width(), self.height()
         img_h, img_w = self.base_img.shape[:2]
 
@@ -75,24 +96,63 @@ class MaskPreviewLabel(QLabel):
         x = pos.x() - x_off
         y = pos.y() - y_off
         if x < 0 or y < 0 or x >= draw_w or y >= draw_h:
-            return
+            return None
 
         ix = int(x / scale)
         iy = int(y / scale)
-        cv2.circle(self.mask, (ix, iy), max(1, int(self.brush_size / max(scale, 0.001))), 255, -1)
+        return ix, iy, scale
+
+    def _draw_to_mask(self, pos, erase=False):
+        if not self.edit_mode or self.base_img is None or self.mask is None:
+            return
+
+        mapped = self._map_label_to_image(pos)
+        if mapped is None:
+            return
+
+        ix, iy, _ = mapped
+        value = 0 if erase else 255
+        cv2.circle(self.mask, (ix, iy), max(1, int(self.brush_size)), value, -1)
         self._render(True)
 
     def mousePressEvent(self, event):
-        if self.edit_mode and event.button() == Qt.LeftButton:
-            self._draw_to_mask(event.position().toPoint())
-            return
+        self.cursor_pos = event.position().toPoint()
+        if self.edit_mode:
+            if event.button() == Qt.LeftButton:
+                self._draw_to_mask(self.cursor_pos, erase=False)
+                return
+            if event.button() == Qt.RightButton:
+                self._draw_to_mask(self.cursor_pos, erase=True)
+                return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        if self.edit_mode and (event.buttons() & Qt.LeftButton):
-            self._draw_to_mask(event.position().toPoint())
-            return
+        self.cursor_pos = event.position().toPoint()
+        if self.edit_mode:
+            if event.buttons() & Qt.LeftButton:
+                self._draw_to_mask(self.cursor_pos, erase=False)
+                return
+            if event.buttons() & Qt.RightButton:
+                self._draw_to_mask(self.cursor_pos, erase=True)
+                return
+            self.update()
         super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        self.cursor_pos = QPoint(-1, -1)
+        self.update()
+        super().leaveEvent(event)
+
+    def wheelEvent(self, event):
+        if self.edit_mode:
+            delta = event.angleDelta().y()
+            if delta > 0:
+                self.brush_size = min(200, self.brush_size + 2)
+            elif delta < 0:
+                self.brush_size = max(1, self.brush_size - 2)
+            self.update()
+            return
+        super().wheelEvent(event)
 
 
 class TimelineFrame(QFrame):
@@ -104,7 +164,7 @@ class TimelineFrame(QFrame):
         self.np_img = np_img
         self.original_id = original_id
         self.mask_highlighted = False
-        self.in_mask_add_mode = False
+        self.playback_highlighted = False
 
         self.setFixedSize(160, 220)
         self.apply_frame_style()
@@ -140,18 +200,21 @@ class TimelineFrame(QFrame):
         self.btn_del = self._create_btn(QStyle.SP_TrashIcon, self.on_delete)
         self.btn_save = self._create_btn(QStyle.SP_DialogSaveButton, self.on_save)
         self.btn_replace = self._create_btn(QStyle.SP_BrowserReload, self.on_replace)
-
         btn_layout.addWidget(self.btn_del)
         btn_layout.addWidget(self.btn_save)
         btn_layout.addWidget(self.btn_replace)
         layout.addLayout(btn_layout)
 
     def apply_frame_style(self):
-        border_color = "#2ecc71" if self.mask_highlighted else "#444"
+        if self.playback_highlighted:
+            border_color = "#f1c40f"
+        elif self.mask_highlighted:
+            border_color = "#2ecc71"
+        else:
+            border_color = "#444"
         self.setStyleSheet(f"QFrame {{ border: 2px solid {border_color}; background: #2b2b2b; }}")
 
     def set_mask_ui_state(self, show_toggle, in_mask):
-        self.in_mask_add_mode = show_toggle
         self.mask_toggle_btn.setVisible(show_toggle)
         if show_toggle:
             self.mask_toggle_btn.setText("-" if in_mask else "+")
@@ -164,7 +227,7 @@ class TimelineFrame(QFrame):
         if fps <= 0:
             fps = 1
         total_ms = int((frame_index / fps) * 1000)
-        minutes = (total_ms // 60000)
+        minutes = total_ms // 60000
         seconds = (total_ms % 60000) // 1000
         ms = total_ms % 1000
         self.lbl_time.setText(f"TIME: {minutes:02}:{seconds:02}:{ms:03}")
@@ -196,8 +259,13 @@ class TimelineFrame(QFrame):
             img = cv2.imread(path)
             self.parent_ui.replace_frame(self.batch_idx, self.frame_idx, img)
 
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.parent_ui.select_timeline_frame(self.original_id, self.np_img)
+        super().mousePressEvent(event)
+
     def mouseMoveEvent(self, e):
-        if e.buttons() == Qt.LeftButton:
+        if e.buttons() == Qt.LeftButton and not self.parent_ui.mode_mask_add_frames:
             drag = QDrag(self)
             mime = QMimeData()
             mime.setText(f"{self.batch_idx}:{self.frame_idx}")
@@ -221,12 +289,20 @@ class MainWindow(QMainWindow):
         self.mode_mask_edit = False
         self.mode_mask_add_frames = False
         self.frame_lookup = {}
+        self.timeline_widgets = {}
 
         self.current_preview_frame = None
         self.current_preview_frame_id = None
 
+        self.playback_timer = QTimer(self)
+        self.playback_timer.timeout.connect(self.playback_step)
+        self.prerender_frames = []
+        self.prerender_source_frame_ids = []
+        self.current_playback_index = 0
+        self.is_playing = False
+
         self.setWindowTitle("Batch Video Editor")
-        self.resize(1300, 850)
+        self.resize(1300, 900)
 
         self.central_stack = QStackedWidget()
         self.setCentralWidget(self.central_stack)
@@ -267,6 +343,9 @@ class MainWindow(QMainWindow):
         self.mask_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.mask_list.customContextMenuRequested.connect(self.show_mask_context_menu)
 
+        self.mask_frames_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.mask_frames_list.customContextMenuRequested.connect(self.show_mask_frames_context_menu)
+
         lists_layout.addWidget(self.mask_list)
         lists_layout.addWidget(self.mask_frames_list)
         mask_layout.addLayout(lists_layout)
@@ -280,17 +359,13 @@ class MainWindow(QMainWindow):
         mask_btns.addWidget(self.btn_run_inpaint)
         mask_layout.addLayout(mask_btns)
 
-        self.btn_remove_frames_from_mask = QPushButton("Удалить выбранные кадры из маски")
-        self.btn_remove_frames_from_mask.clicked.connect(self.remove_selected_frames_from_current_mask)
-        mask_layout.addWidget(self.btn_remove_frames_from_mask)
-
         export_group = QGroupBox("Настройки экспорта")
         export_layout = QFormLayout(export_group)
 
         self.fps_spin = QSpinBox()
         self.fps_spin.setRange(1, 120)
         self.fps_spin.setValue(32)
-        self.fps_spin.valueChanged.connect(self.refresh_timeline)
+        self.fps_spin.valueChanged.connect(self.on_export_settings_changed)
         export_layout.addRow("FPS:", self.fps_spin)
 
         self.interp_steps = QListWidget()
@@ -332,6 +407,21 @@ class MainWindow(QMainWindow):
         self.scroll.setWidget(self.timeline_container)
         self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("Inpaint: %p%")
+
+        playback_row = QHBoxLayout()
+        self.btn_play = QPushButton("▶ Start")
+        self.btn_play.clicked.connect(self.toggle_playback)
+        self.playback_progress = QProgressBar()
+        self.playback_progress.setRange(0, 1000)
+        self.playback_progress.setValue(0)
+        self.playback_progress.setFormat("Preview timeline: %p%")
+        playback_row.addWidget(self.btn_play)
+        playback_row.addWidget(self.playback_progress)
+
         action_btns = QHBoxLayout()
         btn_load = QPushButton("Добавить батчи (.jfif)")
         btn_load.clicked.connect(self.load_images)
@@ -339,11 +429,6 @@ class MainWindow(QMainWindow):
         self.btn_export = QPushButton("Экспортировать видео")
         self.btn_export.clicked.connect(self.export_video)
         self.btn_export.setStyleSheet("background-color: #2b5e2b; color: white; padding: 5px;")
-
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setFormat("Inpaint: %p%")
 
         self.tgl_batch = QToolButton()
         self.tgl_batch.setIcon(self.style().standardIcon(QStyle.SP_FileDialogContentsView))
@@ -376,11 +461,12 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.main_splitter, stretch=1)
         main_layout.addWidget(self.scroll)
         main_layout.addWidget(self.progress_bar)
+        main_layout.addLayout(playback_row)
         main_layout.addLayout(action_btns)
 
-        self.btn_add_film.clicked.connect(lambda: self.interp_steps.addItem("film"))
-        self.btn_add_cv.clicked.connect(lambda: self.interp_steps.addItem("opencv"))
-        self.btn_clear_steps.clicked.connect(self.interp_steps.clear)
+        self.btn_add_film.clicked.connect(lambda: self.add_interpolation_step("film"))
+        self.btn_add_cv.clicked.connect(lambda: self.add_interpolation_step("opencv"))
+        self.btn_clear_steps.clicked.connect(self.clear_interpolation_steps)
 
         self.preview.setMinimumSize(640, 360)
         self.preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -420,6 +506,24 @@ class MainWindow(QMainWindow):
         self.grid_size = size
         self.central_stack.setCurrentWidget(self.editor_screen)
 
+    def on_export_settings_changed(self):
+        self.refresh_timeline()
+        self.invalidate_prerender()
+
+    def add_interpolation_step(self, step_name):
+        self.interp_steps.addItem(step_name)
+        self.on_export_settings_changed()
+
+    def clear_interpolation_steps(self):
+        self.interp_steps.clear()
+        self.on_export_settings_changed()
+
+    def invalidate_prerender(self):
+        self.prerender_frames = []
+        self.prerender_source_frame_ids = []
+        self.current_playback_index = 0
+        self.playback_progress.setValue(0)
+
     def load_images(self):
         files, _ = QFileDialog.getOpenFileNames(self, "Выбор батчей", "", "Images (*.jfif *.jpg *.png)")
         if not files:
@@ -429,12 +533,12 @@ class MainWindow(QMainWindow):
             frames = self.processor.split_batch(f, self.grid_size)
             if not frames:
                 continue
-
             new_batch = Batch(Path(f).name, frames)
             self.project.batches.append(new_batch)
             self.batch_list.addItem(new_batch.name)
 
         self.refresh_timeline()
+        self.invalidate_prerender()
 
     def should_show_mask_overlay(self):
         return self.current_mask_index is not None
@@ -448,6 +552,10 @@ class MainWindow(QMainWindow):
             current_mask = self.masks[self.current_mask_index].get('mask')
 
         self.preview.set_content(img, current_mask, show_overlay=self.should_show_mask_overlay())
+
+    def select_timeline_frame(self, frame_id, img):
+        self.set_preview(img, frame_id)
+        self.seek_playback_to_frame(frame_id)
 
     def toggle_visibility(self):
         self.show_batch_names = self.tgl_batch.isChecked()
@@ -466,6 +574,7 @@ class MainWindow(QMainWindow):
         actual_insert_idx = dest_idx - 1 if start_idx < dest_idx else dest_idx
         self.project.batches.insert(actual_insert_idx, moved_item)
         self.refresh_timeline()
+        self.invalidate_prerender()
 
     def show_batch_context_menu(self, pos):
         menu = QMenu()
@@ -487,13 +596,12 @@ class MainWindow(QMainWindow):
 
         self.cleanup_masks_after_frame_changes()
         self.refresh_timeline()
+        self.invalidate_prerender()
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Delete:
             if self.batch_list.hasFocus():
                 self.delete_selected_batches()
-            elif self.mask_frames_list.hasFocus():
-                self.remove_selected_frames_from_current_mask()
 
         if event.key() in (Qt.Key_Return, Qt.Key_Enter):
             if self.mode_mask_edit:
@@ -502,6 +610,10 @@ class MainWindow(QMainWindow):
             if self.mode_mask_add_frames:
                 self.finish_mask_add_mode()
                 return
+
+        if event.key() == Qt.Key_Space:
+            self.toggle_playback()
+            return
 
         super().keyPressEvent(event)
 
@@ -523,6 +635,7 @@ class MainWindow(QMainWindow):
         frame_multiplier = 2 ** interp_count
 
         self.frame_lookup = {}
+        self.timeline_widgets = {}
         global_idx = 0
         current_mask_frames = set()
         if self.current_mask_index is not None:
@@ -544,15 +657,16 @@ class MainWindow(QMainWindow):
                 self.frame_lookup[frame_id] = (b_idx, f_idx)
 
                 fw = TimelineFrame(img, frame_id, b_idx, f_idx, self)
+                self.timeline_widgets[frame_id] = fw
                 fw.set_time(global_idx * frame_multiplier, fps)
                 fw.lbl_id.setVisible(self.show_frame_ids)
                 fw.lbl_time.setVisible(self.show_timestamps)
-                fw.img_label.mousePressEvent = lambda e, i=img, fid=frame_id: self.set_preview(i, fid)
 
                 in_current_mask = frame_id in current_mask_frames
                 fw.mask_highlighted = in_current_mask
-                fw.apply_frame_style()
                 fw.set_mask_ui_state(self.mode_mask_add_frames, in_current_mask)
+                fw.playback_highlighted = (frame_id == self.get_current_playback_frame_id())
+                fw.apply_frame_style()
 
                 frames_h_layout.addWidget(fw)
                 global_idx += 1
@@ -590,12 +704,14 @@ class MainWindow(QMainWindow):
                     self.batch_list.takeItem(b_idx)
 
         self.refresh_timeline()
+        self.invalidate_prerender()
 
     def replace_frame(self, b_idx, f_idx, new_img):
         if new_img is None:
             return
         self.project.batches[b_idx].frames[f_idx] = new_img
         self.refresh_timeline()
+        self.invalidate_prerender()
 
     def t_dragEnter(self, e):
         e.accept()
@@ -626,6 +742,7 @@ class MainWindow(QMainWindow):
             self.project.batches[-1].frame_ids.append(moving_id)
 
         self.refresh_timeline()
+        self.invalidate_prerender()
 
     def export_video(self):
         current_frames = []
@@ -650,6 +767,105 @@ class MainWindow(QMainWindow):
             out.write(f)
         out.release()
         print(f"Экспорт завершен. Итого кадров: {len(final_frames)}")
+
+    # ---------- Playback ----------
+    def get_flat_frames_with_ids(self):
+        frames, frame_ids = [], []
+        for batch in self.project.batches:
+            if not hasattr(batch, 'frame_ids'):
+                batch.frame_ids = [f"{batch.name}:{i}" for i in range(len(batch.frames))]
+            for i, frame in enumerate(batch.frames):
+                frames.append(frame)
+                frame_ids.append(batch.frame_ids[i])
+        return frames, frame_ids
+
+    def build_prerender(self):
+        frames, frame_ids = self.get_flat_frames_with_ids()
+        if not frames:
+            self.prerender_frames = []
+            self.prerender_source_frame_ids = []
+            return
+
+        interpolation_depth = self.interp_steps.count()
+        self.prerender_frames = self.processor.process_sequence_fast_cv(frames, interpolation_depth)
+
+        # map rendered frame index back to nearest source frame id
+        # source frames are inserted every 2**depth position
+        stride = 2 ** interpolation_depth if interpolation_depth > 0 else 1
+        mapped_ids = []
+        for idx in range(len(self.prerender_frames)):
+            src_idx = min(len(frame_ids) - 1, idx // stride)
+            mapped_ids.append(frame_ids[src_idx])
+        self.prerender_source_frame_ids = mapped_ids
+
+    def get_current_playback_frame_id(self):
+        if not self.prerender_source_frame_ids:
+            return None
+        if self.current_playback_index >= len(self.prerender_source_frame_ids):
+            return None
+        return self.prerender_source_frame_ids[self.current_playback_index]
+
+    def update_playback_visuals(self):
+        frame_id = self.get_current_playback_frame_id()
+        for fid, widget in self.timeline_widgets.items():
+            widget.playback_highlighted = (fid == frame_id)
+            widget.apply_frame_style()
+
+        total = max(1, len(self.prerender_frames) - 1)
+        value = int((self.current_playback_index / total) * 1000) if self.prerender_frames else 0
+        self.playback_progress.setValue(value)
+
+    def playback_step(self):
+        if not self.prerender_frames:
+            self.stop_playback()
+            return
+
+        if self.current_playback_index >= len(self.prerender_frames):
+            self.stop_playback()
+            return
+
+        frame = self.prerender_frames[self.current_playback_index]
+        frame_id = self.get_current_playback_frame_id()
+        self.set_preview(frame, frame_id)
+        self.update_playback_visuals()
+        self.current_playback_index += 1
+
+    def toggle_playback(self):
+        if self.is_playing:
+            self.stop_playback()
+        else:
+            self.start_playback()
+
+    def start_playback(self):
+        if not self.prerender_frames:
+            self.build_prerender()
+        if not self.prerender_frames:
+            return
+
+        self.is_playing = True
+        self.btn_play.setText("⏸ Stop")
+        fps = max(1, self.fps_spin.value())
+        self.playback_timer.start(int(1000 / fps))
+
+    def stop_playback(self):
+        self.is_playing = False
+        self.btn_play.setText("▶ Start")
+        self.playback_timer.stop()
+
+    def seek_playback_to_frame(self, frame_id):
+        if not self.prerender_frames:
+            self.build_prerender()
+        if not self.prerender_source_frame_ids:
+            return
+        try:
+            idx = self.prerender_source_frame_ids.index(frame_id)
+        except ValueError:
+            return
+
+        self.current_playback_index = idx
+        frame = self.prerender_frames[self.current_playback_index]
+        self.set_preview(frame, frame_id)
+        self.update_playback_visuals()
 
     # -------------------- Mask management --------------------
     def create_mask(self):
@@ -678,6 +894,19 @@ class MainWindow(QMainWindow):
         menu.addAction(add_frames_action)
         menu.exec_(self.mask_list.mapToGlobal(pos))
 
+    def show_mask_frames_context_menu(self, pos):
+        if self.current_mask_index is None:
+            return
+        item = self.mask_frames_list.itemAt(pos)
+        if item is None:
+            return
+
+        menu = QMenu()
+        remove_action = QAction("Удалить кадры из маски", self)
+        remove_action.triggered.connect(self.remove_selected_frames_from_current_mask)
+        menu.addAction(remove_action)
+        menu.exec_(self.mask_frames_list.mapToGlobal(pos))
+
     def delete_mask(self, row):
         if row < 0 or row >= len(self.masks):
             return
@@ -687,7 +916,6 @@ class MainWindow(QMainWindow):
             self.current_mask_index = None
         elif self.current_mask_index is not None and self.current_mask_index > row:
             self.current_mask_index -= 1
-
         self.refresh_current_mask_frames_list()
         self.refresh_timeline()
 
@@ -701,7 +929,6 @@ class MainWindow(QMainWindow):
 
         self.current_mask_index = row
         self.refresh_current_mask_frames_list()
-
         if self.current_preview_frame is not None:
             self.set_preview(self.current_preview_frame, self.current_preview_frame_id)
         self.refresh_timeline()
@@ -774,18 +1001,21 @@ class MainWindow(QMainWindow):
             return
         self.mode_mask_add_frames = True
         self.mode_mask_edit = False
+        #self.set_editor_controls_enabled(False)
         self.refresh_timeline()
 
     def finish_mask_add_mode(self):
         self.mode_mask_add_frames = False
+        self.set_editor_controls_enabled(True)
         self.refresh_timeline()
 
     def set_editor_controls_enabled(self, enabled):
         widgets = [
             self.batch_list, self.settings_panel, self.scroll,
             self.btn_export, self.btn_new_mask, self.btn_run_inpaint,
-            self.mask_list, self.mask_frames_list, self.btn_remove_frames_from_mask,
-            self.tgl_batch, self.tgl_id, self.tgl_time
+            self.mask_list, self.mask_frames_list,
+            self.tgl_batch, self.tgl_id, self.tgl_time,
+            self.btn_play
         ]
         for w in widgets:
             w.setEnabled(enabled)
@@ -819,4 +1049,5 @@ class MainWindow(QMainWindow):
             return
 
         self.refresh_timeline()
+        self.invalidate_prerender()
         QMessageBox.information(self, "Inpaint", f"Обработано кадров: {total}")

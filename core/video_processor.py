@@ -1,4 +1,5 @@
 import os
+import tarfile
 from pathlib import Path
 
 import cv2
@@ -11,8 +12,13 @@ from PySide6.QtCore import QObject
 
 class LamaInpainter:
     def __init__(self, model_path=None):
-        default_path = Path(__file__).resolve().parent / "lama_fp32.onnx"
-        self.model_path = Path(model_path) if model_path else default_path
+        models_dir = Path(__file__).resolve().parent / "models"
+        default_path = models_dir / "lama_fp32.onnx"
+        legacy_path = Path(__file__).resolve().parent / "lama_fp32.onnx"
+        if model_path:
+            self.model_path = Path(model_path)
+        else:
+            self.model_path = default_path if default_path.exists() else legacy_path
         self.session = None
 
     def _ensure_session(self):
@@ -78,9 +84,31 @@ class VideoProcessor(QObject):
         self.load_model()
         self.inpainter = LamaInpainter()
 
+    def _resolve_local_film_path(self):
+        models_dir = Path(__file__).resolve().parent / "models"
+        tar_path = models_dir / "film-tensorflow2-film-v1.tar.gz"
+        extract_dir = models_dir / "film-tensorflow2-film-v1"
+
+        if not tar_path.exists():
+            return None
+
+        if not extract_dir.exists():
+            extract_dir.mkdir(parents=True, exist_ok=True)
+            with tarfile.open(tar_path, "r:gz") as tfh:
+                tfh.extractall(extract_dir)
+
+        # Find a folder that looks like saved model root
+        for candidate in [extract_dir, *extract_dir.iterdir()]:
+            if candidate.is_dir() and (candidate / "saved_model.pb").exists():
+                return candidate
+        return extract_dir
+
     def load_model(self):
         try:
-            self.model = hub.load("https://tfhub.dev/google/film/1")
+            local_film = self._resolve_local_film_path()
+            if local_film is None:
+                raise FileNotFoundError("Local FILM archive was not found in core/models")
+            self.model = hub.load(str(local_film))
             self.film_available = True
         except Exception as e:
             print(f"FILM error: {e}")
@@ -108,24 +136,30 @@ class VideoProcessor(QObject):
 
     def process_sequence(self, frames, pipeline):
         current_frames = frames
-
         for step in pipeline:
             new_sequence = []
             for i in range(len(current_frames) - 1):
                 f1 = current_frames[i]
                 f2 = current_frames[i + 1]
-
-                if step == 'film':
-                    mid = self.interpolate_film(f1, f2)
-                else:
-                    mid = self.interpolate_opencv(f1, f2)
-
+                mid = self.interpolate_film(f1, f2) if step == 'film' else self.interpolate_opencv(f1, f2)
                 new_sequence.append(f1)
                 new_sequence.append(mid)
-
             new_sequence.append(current_frames[-1])
             current_frames = new_sequence
+        return current_frames
 
+    def process_sequence_fast_cv(self, frames, interpolation_depth):
+        current_frames = frames
+        for _ in range(interpolation_depth):
+            new_sequence = []
+            for i in range(len(current_frames) - 1):
+                f1 = current_frames[i]
+                f2 = current_frames[i + 1]
+                mid = self.interpolate_opencv(f1, f2)
+                new_sequence.append(f1)
+                new_sequence.append(mid)
+            new_sequence.append(current_frames[-1])
+            current_frames = new_sequence
         return current_frames
 
     def split_batch(self, image_path, grid_size=3):
@@ -141,7 +175,6 @@ class VideoProcessor(QObject):
         return frames
 
     def inpaint_project_frames(self, batches, masks, progress_cb=None):
-        # masks: list[{'name': str, 'mask': np.ndarray, 'frame_ids': set[str]}]
         total = sum(len(m['frame_ids']) for m in masks)
         if total == 0:
             return 0
