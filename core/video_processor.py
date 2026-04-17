@@ -1,10 +1,73 @@
 import os
-import sys
+from pathlib import Path
+
 import cv2
 import numpy as np
 import tensorflow as tf
 import tensorflow_hub as hub
-from PySide6.QtCore import QObject, Signal, QThread
+import onnxruntime
+from PySide6.QtCore import QObject
+
+
+class LamaInpainter:
+    def __init__(self, model_path=None):
+        default_path = Path(__file__).resolve().parent / "lama_fp32.onnx"
+        self.model_path = Path(model_path) if model_path else default_path
+        self.session = None
+
+    def _ensure_session(self):
+        if self.session is not None:
+            return
+        if not self.model_path.exists():
+            raise FileNotFoundError(f"LaMa model not found: {self.model_path}")
+        self.session = onnxruntime.InferenceSession(str(self.model_path), providers=["CPUExecutionProvider"])
+
+    def inpaint(self, image, mask):
+        self._ensure_session()
+
+        if image is None or mask is None:
+            return image
+        if mask.ndim == 3:
+            mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+        if np.max(mask) == 0:
+            return image.copy()
+
+        rows, cols = np.where(mask > 0)
+        y1, y2 = np.min(rows), np.max(rows)
+        x1, x2 = np.min(cols), np.max(cols)
+
+        pad = 200
+        y1 = max(0, y1 - pad)
+        y2 = min(image.shape[0], y2 + pad)
+        x1 = max(0, x1 - pad)
+        x2 = min(image.shape[1], x2 + pad)
+
+        crop_img = image[y1:y2, x1:x2]
+        crop_mask = mask[y1:y2, x1:x2]
+        crop_h, crop_w = crop_img.shape[:2]
+
+        target_size = (512, 512)
+        img_resized = cv2.resize(crop_img, target_size, interpolation=cv2.INTER_AREA)
+        mask_resized = cv2.resize(crop_mask, target_size, interpolation=cv2.INTER_NEAREST)
+
+        img_onnx = img_resized.astype(np.float32) / 255.0
+        img_onnx = img_onnx.transpose(2, 0, 1)[None, ...]
+
+        mask_onnx = (mask_resized.astype(np.float32) / 255.0 > 0).astype(np.float32)
+        mask_onnx = mask_onnx[None, None, ...]
+
+        outputs = self.session.run(None, {"image": img_onnx, "mask": mask_onnx})
+        output = outputs[0][0].transpose(1, 2, 0)
+
+        if output.max() > 2.0:
+            output = output.clip(0, 255).astype(np.uint8)
+        else:
+            output = (output * 255.0).clip(0, 255).astype(np.uint8)
+
+        output_resized = cv2.resize(output, (crop_w, crop_h), interpolation=cv2.INTER_CUBIC)
+        result = image.copy()
+        result[y1:y2, x1:x2] = output_resized
+        return result
 
 
 class VideoProcessor(QObject):
@@ -13,6 +76,7 @@ class VideoProcessor(QObject):
         os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
         self.model = None
         self.load_model()
+        self.inpainter = LamaInpainter()
 
     def load_model(self):
         try:
@@ -43,10 +107,6 @@ class VideoProcessor(QObject):
         return (np.clip(inter_frame * 255.0, 0, 255)).astype(np.uint8)
 
     def process_sequence(self, frames, pipeline):
-        """
-        Применяет цепочку интерполяций ко всему массиву кадров.
-        pipeline: список строк ['film', 'opencv']
-        """
         current_frames = frames
 
         for step in pipeline:
@@ -55,7 +115,6 @@ class VideoProcessor(QObject):
                 f1 = current_frames[i]
                 f2 = current_frames[i + 1]
 
-                # Генерируем промежуточный
                 if step == 'film':
                     mid = self.interpolate_film(f1, f2)
                 else:
@@ -64,7 +123,6 @@ class VideoProcessor(QObject):
                 new_sequence.append(f1)
                 new_sequence.append(mid)
 
-            # Не забываем добавить самый последний кадр
             new_sequence.append(current_frames[-1])
             current_frames = new_sequence
 
@@ -72,7 +130,8 @@ class VideoProcessor(QObject):
 
     def split_batch(self, image_path, grid_size=3):
         img = cv2.imread(image_path)
-        if img is None: return []
+        if img is None:
+            return []
         h, w, _ = img.shape
         fh, fw = h // grid_size, w // grid_size
         frames = []
@@ -80,3 +139,46 @@ class VideoProcessor(QObject):
             for c in range(grid_size):
                 frames.append(img[r * fh:(r + 1) * fh, c * fw:(c + 1) * fw].copy())
         return frames
+
+    def inpaint_project_frames(self, batches, masks, progress_cb=None):
+        # masks: list[{'name': str, 'mask': np.ndarray, 'frame_ids': set[str]}]
+        total = sum(len(m['frame_ids']) for m in masks)
+        if total == 0:
+            return 0
+
+        frame_lookup = {}
+        for b_idx, batch in enumerate(batches):
+            if not hasattr(batch, 'frame_ids'):
+                continue
+            for f_idx, frame_id in enumerate(batch.frame_ids):
+                frame_lookup[frame_id] = (b_idx, f_idx)
+
+        processed = 0
+        for mask_item in masks:
+            mask = mask_item.get('mask')
+            frame_ids = mask_item.get('frame_ids', set())
+            for frame_id in frame_ids:
+                loc = frame_lookup.get(frame_id)
+                if loc is None:
+                    processed += 1
+                    if progress_cb:
+                        progress_cb(processed, total)
+                    continue
+                b_idx, f_idx = loc
+                img = batches[b_idx].frames[f_idx]
+
+                resized_mask = mask
+                if mask is None:
+                    processed += 1
+                    if progress_cb:
+                        progress_cb(processed, total)
+                    continue
+                if mask.shape[:2] != img.shape[:2]:
+                    resized_mask = cv2.resize(mask, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_NEAREST)
+
+                batches[b_idx].frames[f_idx] = self.inpainter.inpaint(img, resized_mask)
+                processed += 1
+                if progress_cb:
+                    progress_cb(processed, total)
+
+        return processed
