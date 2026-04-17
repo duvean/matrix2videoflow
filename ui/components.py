@@ -3,13 +3,13 @@ import numpy as np
 from pathlib import Path
 
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QListWidget, QScrollArea, QLabel, QPushButton,
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QScrollArea, QLabel, QPushButton,
     QFileDialog, QSplitter, QGroupBox, QFormLayout, QSpinBox, QToolButton, QStyle, QFrame,
-    QAbstractItemView, QSizePolicy, QStackedWidget, QMenu, QListWidgetItem, QProgressBar, QMessageBox
+    QAbstractItemView, QSizePolicy, QStackedWidget, QMenu, QListWidgetItem, QProgressBar, QMessageBox,
+    QTreeWidget, QTreeWidgetItem, QGraphicsView, QGraphicsScene, QGraphicsRectItem, QGraphicsTextItem
 )
-from PySide6.QtGui import QImage, QPixmap, QDrag, QAction, QPainter, QPen, QColor
-from PySide6.QtCore import Qt, QMimeData, QEvent, QTimer, QPoint
+from PySide6.QtGui import QImage, QPixmap, QDrag, QAction, QPainter, QPen, QColor, QBrush
+from PySide6.QtCore import Qt, QMimeData, QEvent, QTimer, QPointF, QRectF
 
 from core import VideoProcessor, ProjectManager, Batch
 
@@ -19,15 +19,15 @@ class MaskPreviewLabel(QLabel):
         super().__init__("Выберите кадр для превью")
         self.parent_ui = parent_ui
         self.setAlignment(Qt.AlignCenter)
-        self.setStyleSheet("background: black; color: gray; font-size: 18px; border: 2px solid #333;")
-        self.setMinimumWidth(400)
+        self.setStyleSheet("background: #0f1117; color: #9aa4b2; font-size: 16px; border: 1px solid #2a2f3a;")
+        self.setMinimumWidth(500)
         self.setMouseTracking(True)
 
         self.base_img = None
         self.mask = None
         self.edit_mode = False
         self.brush_size = 20
-        self.cursor_pos = QPoint(-1, -1)
+        self.cursor_pos = None
 
     def set_content(self, img, mask=None, show_overlay=True):
         self.base_img = img.copy() if img is not None else None
@@ -44,12 +44,11 @@ class MaskPreviewLabel(QLabel):
         render = rgb_img.copy()
 
         if show_overlay and self.mask is not None and np.max(self.mask) > 0:
-            if self.mask.shape[:2] != render.shape[:2]:
-                mask = cv2.resize(self.mask, (render.shape[1], render.shape[0]), interpolation=cv2.INTER_NEAREST)
-            else:
-                mask = self.mask
+            mask = self.mask
+            if mask.shape[:2] != render.shape[:2]:
+                mask = cv2.resize(mask, (render.shape[1], render.shape[0]), interpolation=cv2.INTER_NEAREST)
             overlay = render.copy()
-            overlay[mask > 0] = [255, 0, 0]
+            overlay[mask > 0] = [255, 60, 60]
             render = cv2.addWeighted(render, 0.75, overlay, 0.25, 0)
 
         h, w, ch = render.shape
@@ -64,30 +63,29 @@ class MaskPreviewLabel(QLabel):
 
     def paintEvent(self, event):
         super().paintEvent(event)
-        if not self.edit_mode or self.base_img is None or self.cursor_pos.x() < 0:
+        if not self.edit_mode or self.base_img is None or self.cursor_pos is None:
             return
 
         mapped = self._map_label_to_image(self.cursor_pos)
         if mapped is None:
             return
 
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        pen = QPen(QColor(0, 255, 0), 2)
-        painter.setPen(pen)
-        painter.setBrush(Qt.NoBrush)
-
         _, _, scale = mapped
         radius = max(1, int(self.brush_size * scale))
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(QColor("#8dff73"), 2))
+        painter.setBrush(Qt.NoBrush)
         painter.drawEllipse(self.cursor_pos, radius, radius)
         painter.end()
 
     def _map_label_to_image(self, pos):
         if self.base_img is None:
             return None
+
         label_w, label_h = self.width(), self.height()
         img_h, img_w = self.base_img.shape[:2]
-
         scale = min(label_w / img_w, label_h / img_h)
         draw_w, draw_h = int(img_w * scale), int(img_h * scale)
         x_off = (label_w - draw_w) // 2
@@ -139,7 +137,7 @@ class MaskPreviewLabel(QLabel):
         super().mouseMoveEvent(event)
 
     def leaveEvent(self, event):
-        self.cursor_pos = QPoint(-1, -1)
+        self.cursor_pos = None
         self.update()
         super().leaveEvent(event)
 
@@ -155,6 +153,51 @@ class MaskPreviewLabel(QLabel):
         super().wheelEvent(event)
 
 
+class ProcessGraphView(QGraphicsView):
+    def __init__(self):
+        super().__init__()
+        self.scene = QGraphicsScene(self)
+        self.setScene(self.scene)
+        self.setStyleSheet("background: #121620; border: 1px solid #2a2f3a;")
+        self.setMinimumHeight(220)
+        self.setRenderHints(QPainter.Antialiasing)
+
+    def rebuild(self, process_chain):
+        self.scene.clear()
+
+        nodes = ["INPUT", "MASK"] + [n.upper() for n in process_chain] + ["OUTPUT"]
+        if len(nodes) < 3:
+            nodes = ["INPUT", "MASK", "OUTPUT"]
+
+        x = 10
+        y = 30
+        w = 108
+        h = 40
+        gap = 20
+        mid_y = 95
+
+        last_center = None
+        for i, name in enumerate(nodes):
+            yy = y if i != 2 else mid_y
+            rect = QGraphicsRectItem(QRectF(x, yy, w, h))
+            rect.setBrush(QBrush(QColor("#202733")))
+            rect.setPen(QPen(QColor("#4d5b74"), 1.5))
+            self.scene.addItem(rect)
+
+            text = QGraphicsTextItem(name)
+            text.setDefaultTextColor(QColor("#d7dce5"))
+            text.setPos(x + 10, yy + 10)
+            self.scene.addItem(text)
+
+            center = QPointF(x + w / 2, yy + h / 2)
+            if last_center is not None:
+                self.scene.addLine(last_center.x(), last_center.y(), x, yy + h / 2, QPen(QColor("#5f7394"), 2))
+            last_center = QPointF(x + w, yy + h / 2)
+            x += w + gap
+
+        self.scene.setSceneRect(self.scene.itemsBoundingRect().adjusted(-10, -10, 10, 10))
+
+
 class TimelineFrame(QFrame):
     def __init__(self, np_img, original_id, batch_idx, frame_idx, parent_ui):
         super().__init__()
@@ -166,7 +209,7 @@ class TimelineFrame(QFrame):
         self.mask_highlighted = False
         self.playback_highlighted = False
 
-        self.setFixedSize(160, 220)
+        self.setFixedSize(160, 210)
         self.apply_frame_style()
 
         layout = QVBoxLayout(self)
@@ -176,24 +219,24 @@ class TimelineFrame(QFrame):
         top = QHBoxLayout()
         top.addStretch()
         self.mask_toggle_btn = QToolButton()
-        self.mask_toggle_btn.setFixedSize(22, 22)
+        self.mask_toggle_btn.setFixedSize(20, 20)
         self.mask_toggle_btn.clicked.connect(self.toggle_frame_in_mask)
         self.mask_toggle_btn.setVisible(False)
         top.addWidget(self.mask_toggle_btn)
         layout.addLayout(top)
 
         self.img_label = QLabel()
-        self.img_label.setFixedSize(150, 85)
+        self.img_label.setFixedSize(150, 84)
         self.img_label.setScaledContents(True)
         self.update_pixmap(np_img)
         layout.addWidget(self.img_label)
 
         self.lbl_id = QLabel(f"ID: {original_id}")
-        self.lbl_id.setStyleSheet("color: #777; font-size: 9px; border: none;")
+        self.lbl_id.setStyleSheet("color: #7d8696; font-size: 9px; border: none;")
         layout.addWidget(self.lbl_id)
 
         self.lbl_time = QLabel("00:00:000")
-        self.lbl_time.setStyleSheet("color: #00ff00; font-family: 'Courier New'; font-size: 10px; border: none;")
+        self.lbl_time.setStyleSheet("color: #78e08f; font-family: 'Consolas'; font-size: 10px; border: none;")
         layout.addWidget(self.lbl_time)
 
         btn_layout = QHBoxLayout()
@@ -207,25 +250,24 @@ class TimelineFrame(QFrame):
 
     def apply_frame_style(self):
         if self.playback_highlighted:
-            border_color = "#f1c40f"
+            border_color = "#b794f4"
         elif self.mask_highlighted:
-            border_color = "#2ecc71"
+            border_color = "#68d391"
         else:
-            border_color = "#444"
-        self.setStyleSheet(f"QFrame {{ border: 2px solid {border_color}; background: #2b2b2b; }}")
+            border_color = "#3a4152"
+        self.setStyleSheet(f"QFrame {{ border: 2px solid {border_color}; background: #1a1f2b; border-radius: 6px; }}")
 
     def set_mask_ui_state(self, show_toggle, in_mask):
         self.mask_toggle_btn.setVisible(show_toggle)
         if show_toggle:
             self.mask_toggle_btn.setText("-" if in_mask else "+")
-            self.mask_toggle_btn.setStyleSheet("color: #2ecc71; font-weight: bold;")
+            self.mask_toggle_btn.setStyleSheet("color: #68d391; font-weight: bold;")
 
     def toggle_frame_in_mask(self):
         self.parent_ui.toggle_current_mask_frame(self.original_id)
 
     def set_time(self, frame_index, fps):
-        if fps <= 0:
-            fps = 1
+        fps = max(1, fps)
         total_ms = int((frame_index / fps) * 1000)
         minutes = total_ms // 60000
         seconds = (total_ms % 60000) // 1000
@@ -294,6 +336,8 @@ class MainWindow(QMainWindow):
         self.current_preview_frame = None
         self.current_preview_frame_id = None
 
+        self.process_chain = []
+
         self.playback_timer = QTimer(self)
         self.playback_timer.timeout.connect(self.playback_step)
         self.prerender_frames = []
@@ -301,8 +345,18 @@ class MainWindow(QMainWindow):
         self.current_playback_index = 0
         self.is_playing = False
 
-        self.setWindowTitle("Batch Video Editor")
-        self.resize(1300, 900)
+        self.setWindowTitle("BATCH VIDEO EDITOR")
+        self.resize(1450, 920)
+        self.setStyleSheet(
+            """
+            QMainWindow { background: #0c1018; color: #d3d7df; }
+            QGroupBox { border: 1px solid #2a2f3a; border-radius: 8px; margin-top: 8px; }
+            QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; color: #e6e9ef; }
+            QPushButton { background: #1f2734; border: 1px solid #394254; border-radius: 6px; padding: 6px 10px; color: #d9deea; }
+            QPushButton:hover { background: #293448; }
+            QListWidget, QTreeWidget, QScrollArea { background: #131925; border: 1px solid #2a2f3a; border-radius: 6px; }
+            """
+        )
 
         self.central_stack = QStackedWidget()
         self.setCentralWidget(self.central_stack)
@@ -319,81 +373,125 @@ class MainWindow(QMainWindow):
         main_layout = QVBoxLayout(widget)
 
         self.main_splitter = QSplitter(Qt.Horizontal)
+
+        # Left: Batch panel
+        left_panel = QGroupBox("BATCH")
+        left_layout = QVBoxLayout(left_panel)
         self.batch_list = QListWidget()
         self.batch_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.batch_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.batch_list.customContextMenuRequested.connect(self.show_batch_context_menu)
         self.batch_list.setDragDropMode(QAbstractItemView.InternalMove)
         self.batch_list.model().rowsMoved.connect(self.on_batches_reordered)
+        left_layout.addWidget(self.batch_list)
+
+        btn_add_batch = QPushButton("+ Add Batch")
+        btn_add_batch.clicked.connect(self.load_images)
+        left_layout.addWidget(btn_add_batch)
+
+        # Center: preview + playback controls
+        center_widget = QWidget()
+        center_layout = QVBoxLayout(center_widget)
 
         self.preview = MaskPreviewLabel(self)
+        center_layout.addWidget(self.preview, stretch=1)
 
-        self.settings_panel = QGroupBox("Mask + Export")
-        settings_layout = QVBoxLayout(self.settings_panel)
+        playback_panel = QFrame()
+        playback_panel.setStyleSheet("background: #121722; border: 1px solid #2a2f3a; border-radius: 6px;")
+        playback_layout = QHBoxLayout(playback_panel)
 
-        mask_group = QGroupBox("Маски")
-        mask_layout = QVBoxLayout(mask_group)
+        self.btn_play = QPushButton("▶ Start")
+        self.btn_play.clicked.connect(self.toggle_playback)
+        self.btn_export_frames = QPushButton("Export Frames")
+        self.btn_export_frames.clicked.connect(self.export_video)
 
-        lists_layout = QHBoxLayout()
+        self.playback_progress = QProgressBar()
+        self.playback_progress.setRange(0, 1000)
+        self.playback_progress.setValue(0)
+        self.playback_progress.setTextVisible(False)
+
+        self.lbl_play_time = QLabel("00:00:000")
+        self.lbl_play_time.setStyleSheet("color:#aab3c5;")
+
+        playback_layout.addWidget(self.btn_play)
+        playback_layout.addWidget(self.btn_export_frames)
+        playback_layout.addWidget(self.playback_progress, stretch=1)
+        playback_layout.addWidget(self.lbl_play_time)
+
+        center_layout.addWidget(playback_panel)
+
+        # Right: process graph + masks + explorer
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+
+        graph_group = QGroupBox("PROCESS GRAPH")
+        graph_layout = QVBoxLayout(graph_group)
+        self.graph_view = ProcessGraphView()
+        graph_layout.addWidget(self.graph_view)
+
+        bottom_right_row = QHBoxLayout()
+
+        masks_group = QGroupBox("MASKS")
+        masks_layout = QVBoxLayout(masks_group)
         self.mask_list = QListWidget()
-        self.mask_frames_list = QListWidget()
-        self.mask_frames_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
-
         self.mask_list.currentRowChanged.connect(self.select_mask)
         self.mask_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.mask_list.customContextMenuRequested.connect(self.show_mask_context_menu)
+        masks_layout.addWidget(self.mask_list)
 
+        self.mask_frames_list = QListWidget()
+        self.mask_frames_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.mask_frames_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.mask_frames_list.customContextMenuRequested.connect(self.show_mask_frames_context_menu)
-
-        lists_layout.addWidget(self.mask_list)
-        lists_layout.addWidget(self.mask_frames_list)
-        mask_layout.addLayout(lists_layout)
+        masks_layout.addWidget(self.mask_frames_list)
 
         mask_btns = QHBoxLayout()
-        self.btn_new_mask = QPushButton("Новая маска")
-        self.btn_run_inpaint = QPushButton("Inpaint выбранные кадры")
+        self.btn_new_mask = QPushButton("Add Mask")
         self.btn_new_mask.clicked.connect(self.create_mask)
+        self.btn_run_inpaint = QPushButton("Run Inpaint")
         self.btn_run_inpaint.clicked.connect(self.run_inpaint)
         mask_btns.addWidget(self.btn_new_mask)
         mask_btns.addWidget(self.btn_run_inpaint)
-        mask_layout.addLayout(mask_btns)
+        masks_layout.addLayout(mask_btns)
 
-        export_group = QGroupBox("Настройки экспорта")
-        export_layout = QFormLayout(export_group)
+        explorer_group = QGroupBox("EXPLORER")
+        explorer_layout = QVBoxLayout(explorer_group)
+        self.explorer_tree = QTreeWidget()
+        self.explorer_tree.setHeaderLabels(["Folders"])
+        self.populate_explorer_tree()
+        self.explorer_tree.itemDoubleClicked.connect(self.on_explorer_item_activated)
+        explorer_layout.addWidget(self.explorer_tree)
 
         self.fps_spin = QSpinBox()
         self.fps_spin.setRange(1, 120)
         self.fps_spin.setValue(32)
         self.fps_spin.valueChanged.connect(self.on_export_settings_changed)
-        export_layout.addRow("FPS:", self.fps_spin)
+        fps_form = QFormLayout()
+        fps_form.addRow("FPS:", self.fps_spin)
+        explorer_layout.addLayout(fps_form)
 
-        self.interp_steps = QListWidget()
-        self.interp_steps.setMaximumHeight(150)
-        export_layout.addRow("Цепочка:", self.interp_steps)
+        self.btn_export = QPushButton("Export Video")
+        self.btn_export.clicked.connect(self.export_video)
+        explorer_layout.addWidget(self.btn_export)
 
-        add_btns = QHBoxLayout()
-        self.btn_add_film = QPushButton("+ FILM")
-        self.btn_add_cv = QPushButton("+ CV")
-        self.btn_clear_steps = QPushButton("Clear")
-        add_btns.addWidget(self.btn_add_film)
-        add_btns.addWidget(self.btn_add_cv)
-        add_btns.addWidget(self.btn_clear_steps)
-        export_layout.addRow(add_btns)
+        bottom_right_row.addWidget(masks_group)
+        bottom_right_row.addWidget(explorer_group)
 
-        settings_layout.addWidget(mask_group)
-        settings_layout.addWidget(export_group)
+        right_layout.addWidget(graph_group)
+        right_layout.addLayout(bottom_right_row)
 
-        self.main_splitter.addWidget(self.batch_list)
-        self.main_splitter.addWidget(self.preview)
-        self.main_splitter.addWidget(self.settings_panel)
+        self.main_splitter.addWidget(left_panel)
+        self.main_splitter.addWidget(center_widget)
+        self.main_splitter.addWidget(right_widget)
         self.main_splitter.setStretchFactor(0, 1)
         self.main_splitter.setStretchFactor(1, 3)
-        self.main_splitter.setStretchFactor(2, 1)
+        self.main_splitter.setStretchFactor(2, 2)
 
+        # timeline bottom
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
-        self.scroll.setFixedHeight(280)
+        self.scroll.setFixedHeight(270)
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         self.timeline_container = QWidget()
         self.timeline_container.setAcceptDrops(True)
@@ -402,75 +500,57 @@ class MainWindow(QMainWindow):
 
         self.timeline_layout = QHBoxLayout(self.timeline_container)
         self.timeline_layout.setAlignment(Qt.AlignLeft)
-
         self.scroll.viewport().installEventFilter(self)
         self.scroll.setWidget(self.timeline_container)
-        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        # Global progress row
+        bottom_row = QHBoxLayout()
+        self.general_progress = QProgressBar()
+        self.general_progress.setRange(0, 100)
+        self.general_progress.setValue(0)
+        self.general_progress.setFormat("General Process Progress: %p%")
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
-        self.progress_bar.setFormat("Inpaint: %p%")
+        self.progress_bar.setFormat("Inpainting: %p%")
 
-        playback_row = QHBoxLayout()
-        self.btn_play = QPushButton("▶ Start")
-        self.btn_play.clicked.connect(self.toggle_playback)
-        self.playback_progress = QProgressBar()
-        self.playback_progress.setRange(0, 1000)
-        self.playback_progress.setValue(0)
-        self.playback_progress.setFormat("Preview timeline: %p%")
-        playback_row.addWidget(self.btn_play)
-        playback_row.addWidget(self.playback_progress)
-
-        action_btns = QHBoxLayout()
-        btn_load = QPushButton("Добавить батчи (.jfif)")
-        btn_load.clicked.connect(self.load_images)
-
-        self.btn_export = QPushButton("Экспортировать видео")
-        self.btn_export.clicked.connect(self.export_video)
-        self.btn_export.setStyleSheet("background-color: #2b5e2b; color: white; padding: 5px;")
-
-        self.tgl_batch = QToolButton()
-        self.tgl_batch.setIcon(self.style().standardIcon(QStyle.SP_FileDialogContentsView))
-        self.tgl_batch.setCheckable(True)
-        self.tgl_batch.setChecked(True)
-        self.tgl_batch.setToolTip("Имена батчей")
-        self.tgl_batch.clicked.connect(self.toggle_visibility)
-
-        self.tgl_id = QToolButton()
-        self.tgl_id.setIcon(self.style().standardIcon(QStyle.SP_FileDialogListView))
-        self.tgl_id.setCheckable(True)
-        self.tgl_id.setChecked(True)
-        self.tgl_id.setToolTip("ID кадров")
-        self.tgl_id.clicked.connect(self.toggle_visibility)
-
-        self.tgl_time = QToolButton()
-        self.tgl_time.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
-        self.tgl_time.setCheckable(True)
-        self.tgl_time.setChecked(True)
-        self.tgl_time.setToolTip("Время")
-        self.tgl_time.clicked.connect(self.toggle_visibility)
-
-        action_btns.addWidget(btn_load)
-        action_btns.addWidget(self.tgl_batch)
-        action_btns.addWidget(self.tgl_id)
-        action_btns.addWidget(self.tgl_time)
-        action_btns.addStretch()
-        action_btns.addWidget(self.btn_export)
+        bottom_row.addWidget(self.general_progress, stretch=2)
+        bottom_row.addWidget(self.progress_bar, stretch=1)
 
         main_layout.addWidget(self.main_splitter, stretch=1)
         main_layout.addWidget(self.scroll)
-        main_layout.addWidget(self.progress_bar)
-        main_layout.addLayout(playback_row)
-        main_layout.addLayout(action_btns)
+        main_layout.addLayout(bottom_row)
 
-        self.btn_add_film.clicked.connect(lambda: self.add_interpolation_step("film"))
-        self.btn_add_cv.clicked.connect(lambda: self.add_interpolation_step("opencv"))
-        self.btn_clear_steps.clicked.connect(self.clear_interpolation_steps)
+        self.graph_view.rebuild(self.process_chain)
 
-        self.preview.setMinimumSize(640, 360)
+        self.preview.setMinimumSize(680, 380)
         self.preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         return widget
+
+    def populate_explorer_tree(self):
+        self.explorer_tree.clear()
+        interp = QTreeWidgetItem(["interpolation"])
+        interp.addChild(QTreeWidgetItem(["cv"]))
+        interp.addChild(QTreeWidgetItem(["film"]))
+
+        upscalers = QTreeWidgetItem(["upscalers"])
+
+        self.explorer_tree.addTopLevelItem(interp)
+        self.explorer_tree.addTopLevelItem(upscalers)
+        self.explorer_tree.expandAll()
+
+    def on_explorer_item_activated(self, item, _column):
+        parent = item.parent()
+        if parent is None:
+            return
+
+        folder = parent.text(0)
+        leaf = item.text(0)
+        if folder == "interpolation" and leaf in ("cv", "film"):
+            self.process_chain.append(leaf)
+            self.graph_view.rebuild(self.process_chain)
+            self.invalidate_prerender()
 
     def init_welcome_ui(self):
         widget = QWidget()
@@ -510,19 +590,12 @@ class MainWindow(QMainWindow):
         self.refresh_timeline()
         self.invalidate_prerender()
 
-    def add_interpolation_step(self, step_name):
-        self.interp_steps.addItem(step_name)
-        self.on_export_settings_changed()
-
-    def clear_interpolation_steps(self):
-        self.interp_steps.clear()
-        self.on_export_settings_changed()
-
     def invalidate_prerender(self):
         self.prerender_frames = []
         self.prerender_source_frame_ids = []
         self.current_playback_index = 0
         self.playback_progress.setValue(0)
+        self.lbl_play_time.setText("00:00:000")
 
     def load_images(self):
         files, _ = QFileDialog.getOpenFileNames(self, "Выбор батчей", "", "Images (*.jfif *.jpg *.png)")
@@ -556,12 +629,6 @@ class MainWindow(QMainWindow):
     def select_timeline_frame(self, frame_id, img):
         self.set_preview(img, frame_id)
         self.seek_playback_to_frame(frame_id)
-
-    def toggle_visibility(self):
-        self.show_batch_names = self.tgl_batch.isChecked()
-        self.show_frame_ids = self.tgl_id.isChecked()
-        self.show_timestamps = self.tgl_time.isChecked()
-        self.refresh_timeline()
 
     def on_batches_reordered(self, parent, start, end, destination, row):
         start_idx = start.row() if hasattr(start, 'row') else start
@@ -599,10 +666,6 @@ class MainWindow(QMainWindow):
         self.invalidate_prerender()
 
     def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Delete:
-            if self.batch_list.hasFocus():
-                self.delete_selected_batches()
-
         if event.key() in (Qt.Key_Return, Qt.Key_Enter):
             if self.mode_mask_edit:
                 self.finish_mask_edit_mode()
@@ -612,13 +675,16 @@ class MainWindow(QMainWindow):
                 return
 
         if event.key() == Qt.Key_Space:
+            # если дошли до конца, стартуем с начала
+            if self.prerender_frames and self.current_playback_index >= len(self.prerender_frames):
+                self.current_playback_index = 0
             self.toggle_playback()
             return
 
         super().keyPressEvent(event)
 
     def eventFilter(self, source, event):
-        if event.type() == QEvent.Wheel and source is self.scroll.viewport():
+        if event.type() == QEvent.Wheel and source is self.scroll.viewport() and not self.mode_mask_edit:
             delta = event.angleDelta().y()
             self.scroll.horizontalScrollBar().setValue(self.scroll.horizontalScrollBar().value() - delta)
             return True
@@ -631,8 +697,7 @@ class MainWindow(QMainWindow):
                 item.widget().deleteLater()
 
         fps = self.fps_spin.value()
-        interp_count = self.interp_steps.count()
-        frame_multiplier = 2 ** interp_count
+        frame_multiplier = 2 ** len(self.process_chain)
 
         self.frame_lookup = {}
         self.timeline_widgets = {}
@@ -672,18 +737,6 @@ class MainWindow(QMainWindow):
                 global_idx += 1
 
             batch_v_layout.addLayout(frames_h_layout)
-
-            bracket = QFrame()
-            bracket.setFixedHeight(8)
-            bracket.setStyleSheet("border: 2px solid #555; border-top: none; margin-top: -2px;")
-            batch_v_layout.addWidget(bracket)
-
-            if self.show_batch_names:
-                lbl = QLabel(batch.name)
-                lbl.setAlignment(Qt.AlignCenter)
-                lbl.setStyleSheet("color: #5cacee; font-weight: bold;")
-                batch_v_layout.addWidget(lbl)
-
             self.timeline_layout.addWidget(batch_widget)
 
         self.refresh_current_mask_frames_list()
@@ -750,10 +803,9 @@ class MainWindow(QMainWindow):
             current_frames.extend(b.frames)
 
         if not current_frames:
-            print("Нет кадров для экспорта")
             return
 
-        pipeline = [self.interp_steps.item(i).text() for i in range(self.interp_steps.count())]
+        pipeline = self.process_chain
         target_fps = self.fps_spin.value()
         save_path, _ = QFileDialog.getSaveFileName(self, "Экспорт", "output.mp4", "Video (*.mp4)")
         if not save_path:
@@ -766,7 +818,6 @@ class MainWindow(QMainWindow):
         for f in final_frames:
             out.write(f)
         out.release()
-        print(f"Экспорт завершен. Итого кадров: {len(final_frames)}")
 
     # ---------- Playback ----------
     def get_flat_frames_with_ids(self):
@@ -786,11 +837,9 @@ class MainWindow(QMainWindow):
             self.prerender_source_frame_ids = []
             return
 
-        interpolation_depth = self.interp_steps.count()
+        interpolation_depth = len(self.process_chain)
         self.prerender_frames = self.processor.process_sequence_fast_cv(frames, interpolation_depth)
 
-        # map rendered frame index back to nearest source frame id
-        # source frames are inserted every 2**depth position
         stride = 2 ** interpolation_depth if interpolation_depth > 0 else 1
         mapped_ids = []
         for idx in range(len(self.prerender_frames)):
@@ -805,6 +854,16 @@ class MainWindow(QMainWindow):
             return None
         return self.prerender_source_frame_ids[self.current_playback_index]
 
+    def _scroll_timeline_to_frame(self, frame_id):
+        widget = self.timeline_widgets.get(frame_id)
+        if not widget:
+            return
+        x = widget.mapTo(self.timeline_container, widget.rect().topLeft()).x()
+        target_center = x + widget.width() // 2
+        bar = self.scroll.horizontalScrollBar()
+        new_val = max(0, target_center - self.scroll.viewport().width() // 2)
+        bar.setValue(new_val)
+
     def update_playback_visuals(self):
         frame_id = self.get_current_playback_frame_id()
         for fid, widget in self.timeline_widgets.items():
@@ -814,6 +873,16 @@ class MainWindow(QMainWindow):
         total = max(1, len(self.prerender_frames) - 1)
         value = int((self.current_playback_index / total) * 1000) if self.prerender_frames else 0
         self.playback_progress.setValue(value)
+
+        fps = max(1, self.fps_spin.value())
+        total_ms = int((self.current_playback_index / fps) * 1000)
+        m = total_ms // 60000
+        s = (total_ms % 60000) // 1000
+        ms = total_ms % 1000
+        self.lbl_play_time.setText(f"{m:02}:{s:02}:{ms:03}")
+
+        if frame_id:
+            self._scroll_timeline_to_frame(frame_id)
 
     def playback_step(self):
         if not self.prerender_frames:
@@ -841,6 +910,9 @@ class MainWindow(QMainWindow):
             self.build_prerender()
         if not self.prerender_frames:
             return
+
+        if self.current_playback_index >= len(self.prerender_frames):
+            self.current_playback_index = 0
 
         self.is_playing = True
         self.btn_play.setText("⏸ Stop")
@@ -987,12 +1059,12 @@ class MainWindow(QMainWindow):
         self.preview.edit_mode = True
         self.preview.mask = self.masks[self.current_mask_index]['mask']
         self.preview._render(True)
-        self.set_editor_controls_enabled(False)
+        self.set_editor_controls_for_mode("mask_edit")
 
     def finish_mask_edit_mode(self):
         self.mode_mask_edit = False
         self.preview.edit_mode = False
-        self.set_editor_controls_enabled(True)
+        self.set_editor_controls_for_mode(None)
         if self.current_preview_frame is not None:
             self.set_preview(self.current_preview_frame, self.current_preview_frame_id)
 
@@ -1001,25 +1073,36 @@ class MainWindow(QMainWindow):
             return
         self.mode_mask_add_frames = True
         self.mode_mask_edit = False
-        self.set_editor_controls_enabled(False)
+        self.set_editor_controls_for_mode("mask_add")
         self.refresh_timeline()
 
     def finish_mask_add_mode(self):
         self.mode_mask_add_frames = False
-        self.set_editor_controls_enabled(True)
+        self.set_editor_controls_for_mode(None)
         self.refresh_timeline()
 
-    def set_editor_controls_enabled(self, enabled):
-        widgets = [
-            self.batch_list, self.settings_panel, self.scroll,
-            self.btn_export, self.btn_new_mask, self.btn_run_inpaint,
-            self.mask_list, self.mask_frames_list,
-            self.tgl_batch, self.tgl_id, self.tgl_time,
-            self.btn_play
+    def set_editor_controls_for_mode(self, mode):
+        # mode: None | mask_edit | mask_add
+        full_lock_widgets = [
+            self.batch_list, self.btn_new_mask, self.btn_run_inpaint,
+            self.explorer_tree, self.btn_export, self.fps_spin,
+            self.btn_play, self.btn_export_frames
         ]
-        for w in widgets:
-            w.setEnabled(enabled)
-        self.preview.setEnabled(True)
+
+        if mode == "mask_edit":
+            for w in full_lock_widgets + [self.scroll, self.mask_list, self.mask_frames_list]:
+                w.setEnabled(False)
+            self.preview.setEnabled(True)
+        elif mode == "mask_add":
+            # важно: timeline оставляем активным, чтобы '+' работал
+            for w in full_lock_widgets + [self.mask_list, self.mask_frames_list]:
+                w.setEnabled(False)
+            self.scroll.setEnabled(True)
+            self.preview.setEnabled(True)
+        else:
+            for w in full_lock_widgets + [self.scroll, self.mask_list, self.mask_frames_list]:
+                w.setEnabled(True)
+            self.preview.setEnabled(True)
 
     def cleanup_masks_after_frame_changes(self):
         valid = set(self.frame_lookup.keys())
