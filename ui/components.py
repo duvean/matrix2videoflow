@@ -2,8 +2,8 @@ import cv2
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                                QListWidget, QScrollArea, QLabel, QPushButton,
                                QFileDialog, QSplitter, QGroupBox, QFormLayout, QSpinBox, QToolButton, QStyle, QFrame,
-                               QAbstractItemView, QSizePolicy)
-from PySide6.QtGui import QImage, QPixmap, QDrag
+                               QAbstractItemView, QSizePolicy, QStackedWidget, QMenu)
+from PySide6.QtGui import QImage, QPixmap, QDrag, QAction
 from PySide6.QtCore import Qt, QMimeData, QEvent
 from pathlib import Path
 from core import VideoProcessor, ProjectManager, Batch
@@ -154,7 +154,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.processor = VideoProcessor()
         self.project = ProjectManager()
-        self.all_frames = []  # Список всех кадров на таймлайне (для экспорта)
+
+        # Настройки проекта по умолчанию
+        self.grid_size = 4  # Будет меняться при создании проекта (4, 9 или 16)
 
         # Флаги отображения
         self.show_batch_names = True
@@ -163,26 +165,39 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle("Batch Video Editor")
         self.resize(1300, 850)
-        self.init_ui()
 
+        # Главный стек виджетов
+        self.central_stack = QStackedWidget()
+        self.setCentralWidget(self.central_stack)
+
+        # Создаем экраны
+        self.welcome_screen = self.init_welcome_ui()
+        self.editor_screen = self.init_editor_ui()
+
+        self.central_stack.addWidget(self.welcome_screen)
+        self.central_stack.addWidget(self.editor_screen)
+
+        # Начинаем с приветственного экрана
+        self.central_stack.setCurrentWidget(self.welcome_screen)
+
+    def init_editor_ui(self):
+        widget = QWidget()
+        main_layout = QVBoxLayout(widget)
+
+        # Находим и настраиваем batch_list внутри этого метода:
+        self.main_splitter = QSplitter(Qt.Horizontal)
+        self.batch_list = QListWidget()
+
+        # Настройки мультивыбора
+        self.batch_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+
+        # Контекстное меню
+        self.batch_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.batch_list.customContextMenuRequested.connect(self.show_batch_context_menu)
+
+        # DND для batch_list
         self.batch_list.setDragDropMode(QAbstractItemView.InternalMove)
         self.batch_list.model().rowsMoved.connect(self.on_batches_reordered)
-
-        # Разрешаем Drop на контейнер таймлайна
-        self.timeline_container.setAcceptDrops(True)
-        self.timeline_container.dragEnterEvent = self.t_dragEnter
-        self.timeline_container.dropEvent = self.t_drop
-
-    def init_ui(self):
-        central = QWidget()
-        self.setCentralWidget(central)
-        main_layout = QVBoxLayout(central)
-
-        # 1. ГЛАВНЫЙ СПЛИТТЕР (Горизонтальный: Список | Превью | Настройки)
-        self.main_splitter = QSplitter(Qt.Horizontal)
-
-        # Левая часть: Список батчей
-        self.batch_list = QListWidget()
 
         # Центральная часть: Превью
         self.preview = QLabel("Выберите кадр для превью")
@@ -227,9 +242,16 @@ class MainWindow(QMainWindow):
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFixedHeight(180)
+
         self.timeline_container = QWidget()
+        self.timeline_container.setAcceptDrops(True)
+        self.timeline_container.dragEnterEvent = self.t_dragEnter
+        self.timeline_container.dropEvent = self.t_drop
+
         self.timeline_layout = QHBoxLayout(self.timeline_container)
         self.timeline_layout.setAlignment(Qt.AlignLeft)
+
+        self.scroll.viewport().installEventFilter(self)
         self.scroll.setWidget(self.timeline_container)
 
         # 3. КНОПКИ ДЕЙСТВИЙ (Самый низ)
@@ -293,22 +315,58 @@ class MainWindow(QMainWindow):
         # Установка фильтра событий для прокрутки колесиком мыши
         self.scroll.viewport().installEventFilter(self)
 
+        return widget
+
+    def init_welcome_ui(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setAlignment(Qt.AlignCenter)
+
+        title = QLabel("Batch Video Editor")
+        title.setStyleSheet("font-size: 32px; font-weight: bold; margin-bottom: 20px;")
+        layout.addWidget(title)
+
+        # Кнопка открытия (пока без действия)
+        btn_open = QPushButton("Открыть проект...")
+        btn_open.setFixedSize(200, 40)
+        layout.addWidget(btn_open)
+
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setStyleSheet("color: #444; margin: 20px;")
+        layout.addWidget(line)
+
+        layout.addWidget(QLabel("Создать новый проект (выберите сетку):"))
+
+        # Сетка выбора размерности
+        grid_btns = QHBoxLayout()
+        for size in [2, 3, 4]:
+            btn = QPushButton(f"{size**2} кадров\n({int(size)}x{int(size)})")
+            btn.setFixedSize(100, 60)
+            btn.clicked.connect(lambda checked, s=size: self.start_new_project(s))
+            grid_btns.addWidget(btn)
+
+        layout.addLayout(grid_btns)
+        return widget
+
+    def start_new_project(self, size):
+        self.grid_size = size
+        self.central_stack.setCurrentWidget(self.editor_screen)
+        print(f"Проект создан: сетка {size}")
+
     def load_images(self):
         files, _ = QFileDialog.getOpenFileNames(self, "Выбор батчей", "", "Images (*.jfif *.jpg *.png)")
         if not files: return
 
         for f in files:
-            frames = self.processor.split_batch(f)
+            # ПЕРЕДАЕМ grid_size в процессор
+            frames = self.processor.split_batch(f, self.grid_size)
             if not frames: continue
 
-            # Создаем объект батча и сохраняем в проект
             new_batch = Batch(Path(f).name, frames)
             self.project.batches.append(new_batch)
-
-            # Добавляем только имя в визуальный список
             self.batch_list.addItem(new_batch.name)
 
-        # После загрузки всех файлов обновляем таймлайн
         self.refresh_timeline()
 
     def set_preview(self, img):
@@ -350,6 +408,38 @@ class MainWindow(QMainWindow):
 
         # Полная перерисовка таймлайна
         self.refresh_timeline()
+
+    def show_batch_context_menu(self, pos):
+        menu = QMenu()
+        del_action = QAction("Удалить", self)
+        del_action.triggered.connect(self.delete_selected_batches)
+        menu.addAction(del_action)
+        menu.exec_(self.batch_list.mapToGlobal(pos))
+
+    def delete_selected_batches(self):
+        selected_items = self.batch_list.selectedItems()
+        if not selected_items:
+            return
+
+        # Получаем индексы строк и сортируем их в обратном порядке
+        # (чтобы при удалении индексы не смещались)
+        indices = sorted([self.batch_list.row(item) for item in selected_items], reverse=True)
+
+        for index in indices:
+            # Удаляем из данных проекта
+            if index < len(self.project.batches):
+                self.project.batches.pop(index)
+            # Удаляем из визуального списка
+            self.batch_list.takeItem(index)
+
+        self.refresh_timeline()
+
+    # Включаем удаление по кнопке Delete на клавиатуре
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Delete:
+            if self.batch_list.hasFocus():
+                self.delete_selected_batches()
+        super().keyPressEvent(event)
 
     def eventFilter(self, source, event):
         # Реализация горизонтальной прокрутки колесиком
