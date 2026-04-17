@@ -2,9 +2,9 @@ import cv2
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                                QListWidget, QScrollArea, QLabel, QPushButton,
                                QFileDialog, QSplitter, QGroupBox, QFormLayout, QSpinBox, QToolButton, QStyle, QFrame,
-                               QAbstractItemView)
+                               QAbstractItemView, QSizePolicy)
 from PySide6.QtGui import QImage, QPixmap, QDrag
-from PySide6.QtCore import Qt, QMimeData
+from PySide6.QtCore import Qt, QMimeData, QEvent
 from pathlib import Path
 from core import VideoProcessor, ProjectManager, Batch
 
@@ -52,48 +52,64 @@ class ExportSettings(QGroupBox):
 
 
 class TimelineFrame(QFrame):
-    def __init__(self, np_img, batch_idx, frame_idx, parent_ui):
+    def __init__(self, np_img, original_id, batch_idx, frame_idx, parent_ui):
         super().__init__()
-        self.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        # Возвращаем атрибуты для DND
         self.batch_idx = batch_idx
         self.frame_idx = frame_idx
         self.parent_ui = parent_ui
         self.np_img = np_img
+        self.original_id = original_id
 
-        self.setFixedSize(160, 120)
-        self.setFrameStyle(QFrame.Panel | QFrame.Plain)
-        self.setLineWidth(1)
+        self.setFixedSize(160, 200)  # Увеличили высоту под все метки
+        self.setStyleSheet("QFrame { border: 1px solid #444; background: #2b2b2b; }")
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(2, 2, 2, 2)
-        layout.setSpacing(0)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
 
-        # Иконка кадра
+        # Изображение (Превью кадра)
         self.img_label = QLabel()
+        self.img_label.setFixedSize(150, 85)  # Фиксируем размер, чтобы не росло окно
         self.img_label.setScaledContents(True)
         self.update_pixmap(np_img)
         layout.addWidget(self.img_label)
 
-        # Панель кнопок (Overlay-стиль или снизу)
+        # Метка ID
+        self.lbl_id = QLabel(f"ID: {original_id}")
+        self.lbl_id.setStyleSheet("color: #777; font-size: 9px; border: none;")
+        layout.addWidget(self.lbl_id)
+
+        # Метка Времени
+        self.lbl_time = QLabel("00:00:000")
+        self.lbl_time.setStyleSheet("color: #00ff00; font-family: 'Courier New'; font-size: 10px; border: none;")
+        layout.addWidget(self.lbl_time)
+
+        # Кнопки
         btn_layout = QHBoxLayout()
+        self.btn_del = self._create_btn(QStyle.SP_TrashIcon, self.on_delete)
+        self.btn_save = self._create_btn(QStyle.SP_DialogSaveButton, self.on_save)
+        self.btn_replace = self._create_btn(QStyle.SP_BrowserReload, self.on_replace)
 
-        self.btn_del = QToolButton()
-        self.btn_del.setIcon(self.style().standardIcon(QStyle.SP_TrashIcon))
-        self.btn_del.clicked.connect(self.on_delete)
-
-        self.btn_save = QToolButton()
-        self.btn_save.setIcon(self.style().standardIcon(QStyle.SP_DialogSaveButton))
-        self.btn_save.clicked.connect(self.on_save)
-
-        self.btn_replace = QToolButton()
-        self.btn_replace.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
-        self.btn_replace.clicked.connect(self.on_replace)
-
-        for b in [self.btn_del, self.btn_save, self.btn_replace]:
-            b.setFixedSize(24, 24)
-            btn_layout.addWidget(b)
-
+        btn_layout.addWidget(self.btn_del)
+        btn_layout.addWidget(self.btn_save)
+        btn_layout.addWidget(self.btn_replace)
         layout.addLayout(btn_layout)
+
+    def set_time(self, frame_index, fps):
+        if fps <= 0: fps = 1
+        total_ms = int((frame_index / fps) * 1000)
+        minutes = (total_ms // 60000)
+        seconds = (total_ms % 60000) // 1000
+        ms = total_ms % 1000
+        self.lbl_time.setText(f"TIME: {minutes:02}:{seconds:02}:{ms:03}")
+
+    def _create_btn(self, icon_style, slot):
+        btn = QToolButton()
+        btn.setFixedSize(22, 22)
+        btn.setIcon(self.style().standardIcon(icon_style))
+        btn.clicked.connect(slot)
+        return btn
 
     def update_pixmap(self, np_img):
         rgb = cv2.cvtColor(np_img, cv2.COLOR_BGR2RGB)
@@ -101,19 +117,26 @@ class TimelineFrame(QFrame):
         qimg = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
         self.img_label.setPixmap(QPixmap.fromImage(qimg))
 
-    # Логика кнопок
     def on_delete(self):
         self.parent_ui.delete_frame(self.batch_idx, self.frame_idx)
 
     def on_save(self):
-        path, _ = QFileDialog.getSaveFileName(None, "Сохранить кадр", "", "Images (*.png *.jpg)")
+        path, _ = QFileDialog.getSaveFileName(None, "Save", "", "PNG (*.png)")
         if path: cv2.imwrite(path, self.np_img)
 
     def on_replace(self):
-        path, _ = QFileDialog.getOpenFileName(None, "Заменить кадр", "", "Images (*.jfif *.jpg *.png)")
+        path, _ = QFileDialog.getOpenFileName(None, "Replace", "", "Images (*.jpg *.png *.jfif)")
         if path:
-            new_img = cv2.imread(path)
-            self.parent_ui.replace_frame(self.batch_idx, self.frame_idx, new_img)
+            img = cv2.imread(path)
+            self.parent_ui.replace_frame(self.batch_idx, self.frame_idx, img)
+
+    def mouseMoveEvent(self, e):
+        if e.buttons() == Qt.LeftButton:
+            drag = QDrag(self)
+            mime = QMimeData()
+            mime.setText(f"{self.batch_idx}:{self.frame_idx}")
+            drag.setMimeData(mime)
+            drag.exec_(Qt.MoveAction)
 
     # --- DRAG AND DROP ---
     def mouseMoveEvent(self, e):
@@ -133,8 +156,13 @@ class MainWindow(QMainWindow):
         self.project = ProjectManager()
         self.all_frames = []  # Список всех кадров на таймлайне (для экспорта)
 
-        self.setWindowTitle("Batch Video Editor MVP")
-        self.resize(1100, 700)
+        # Флаги отображения
+        self.show_batch_names = True
+        self.show_frame_ids = True
+        self.show_timestamps = True
+
+        self.setWindowTitle("Batch Video Editor")
+        self.resize(1300, 850)
         self.init_ui()
 
         self.batch_list.setDragDropMode(QAbstractItemView.InternalMove)
@@ -169,6 +197,7 @@ class MainWindow(QMainWindow):
         self.fps_spin = QSpinBox()
         self.fps_spin.setRange(1, 120)
         self.fps_spin.setValue(32)
+        self.fps_spin.valueChanged.connect(self.refresh_timeline)
         settings_layout.addRow("FPS:", self.fps_spin)
 
         self.interp_steps = QListWidget()
@@ -212,6 +241,33 @@ class MainWindow(QMainWindow):
         self.btn_export.clicked.connect(self.export_video)
         self.btn_export.setStyleSheet("background-color: #2b5e2b; color: white; padding: 5px;")
 
+        # Кнопки-переключатели рядом с "Добавить"
+        self.tgl_batch = QToolButton()
+        self.tgl_batch.setIcon(self.style().standardIcon(QStyle.SP_FileDialogContentsView))
+        self.tgl_batch.setCheckable(True)
+        self.tgl_batch.setChecked(True)
+        self.tgl_batch.setToolTip("Имена батчей")
+        self.tgl_batch.clicked.connect(self.toggle_visibility)
+
+        self.tgl_id = QToolButton()
+        self.tgl_id.setIcon(self.style().standardIcon(QStyle.SP_FileDialogListView))
+        self.tgl_id.setCheckable(True)
+        self.tgl_id.setChecked(True)
+        self.tgl_id.setToolTip("ID кадров")
+        self.tgl_id.clicked.connect(self.toggle_visibility)
+
+        self.tgl_time = QToolButton()
+        self.tgl_time.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+        self.tgl_time.setCheckable(True)
+        self.tgl_time.setChecked(True)
+        self.tgl_time.setToolTip("Время")
+        self.tgl_time.clicked.connect(self.toggle_visibility)
+
+        # Добавляем их в action_btns (там где кнопка Добавить)
+        action_btns.insertWidget(1, self.tgl_batch)
+        action_btns.insertWidget(2, self.tgl_id)
+        action_btns.insertWidget(3, self.tgl_time)
+
         action_btns.addWidget(btn_load)
         action_btns.addStretch()
         action_btns.addWidget(self.btn_export)
@@ -225,6 +281,17 @@ class MainWindow(QMainWindow):
         self.btn_add_film.clicked.connect(lambda: self.interp_steps.addItem("film"))
         self.btn_add_cv.clicked.connect(lambda: self.interp_steps.addItem("opencv"))
         self.btn_clear_steps.clicked.connect(self.interp_steps.clear)
+
+        # Фиксируем превью, чтобы оно не раздувалось
+        self.preview.setMinimumSize(640, 360)
+        self.preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        # Таймлайн: Увеличиваем высоту и убираем вертикальный скролл
+        self.scroll.setFixedHeight(280)  # Больше места для подписей и скобок
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        # Установка фильтра событий для прокрутки колесиком мыши
+        self.scroll.viewport().installEventFilter(self)
 
     def load_images(self):
         files, _ = QFileDialog.getOpenFileNames(self, "Выбор батчей", "", "Images (*.jfif *.jpg *.png)")
@@ -252,6 +319,12 @@ class MainWindow(QMainWindow):
         pixmap = QPixmap.fromImage(q_img).scaled(self.preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self.preview.setPixmap(pixmap)
 
+    def toggle_visibility(self):
+        self.show_batch_names = self.tgl_batch.isChecked()
+        self.show_frame_ids = self.tgl_id.isChecked()
+        self.show_timestamps = self.tgl_time.isChecked()
+        self.refresh_timeline()
+
     def on_batches_reordered(self, parent, start, end, destination, row):
         # Извлекаем индексы как целые числа
         start_idx = start
@@ -278,22 +351,67 @@ class MainWindow(QMainWindow):
         # Полная перерисовка таймлайна
         self.refresh_timeline()
 
+    def eventFilter(self, source, event):
+        # Реализация горизонтальной прокрутки колесиком
+        if event.type() == QEvent.Wheel and source is self.scroll.viewport():
+            delta = event.angleDelta().y()
+            self.scroll.horizontalScrollBar().setValue(
+                self.scroll.horizontalScrollBar().value() - delta
+            )
+            return True
+        return super().eventFilter(source, event)
+
     def refresh_timeline(self):
-        # Очистка
         while self.timeline_layout.count():
             item = self.timeline_layout.takeAt(0)
             if item.widget(): item.widget().deleteLater()
 
-        # Отрисовка
-        for b_idx, batch in enumerate(self.project.batches):
-            for f_idx, img in enumerate(batch.frames):
-                fw = TimelineFrame(img, b_idx, f_idx, self)
-                # Важно: восстанавливаем привязку превью, которую мы потеряли
-                fw.img_label.mousePressEvent = lambda e, i=img: self.set_preview(i)
-                self.timeline_layout.addWidget(fw)
+        fps = self.fps_spin.value()
+        interp_count = self.interp_steps.count()
+        # Каждая интерполяция удваивает количество кадров
+        frame_multiplier = 2 ** interp_count
 
-            # Добавим небольшой отступ между батчами для наглядности
-            self.timeline_layout.addSpacing(15)
+        global_idx = 0
+        for b_idx, batch in enumerate(self.project.batches):
+            # Контейнер батча
+            batch_widget = QWidget()
+            batch_v_layout = QVBoxLayout(batch_widget)
+
+            frames_h_layout = QHBoxLayout()
+            for f_idx, img in enumerate(batch.frames):
+                # Гарантируем наличие ID
+                if not hasattr(batch, 'frame_ids'): batch.frame_ids = []
+                while len(batch.frame_ids) <= f_idx:
+                    batch.frame_ids.append(f"{f_idx}_{batch.name}")
+
+                fw = TimelineFrame(img, batch.frame_ids[f_idx], b_idx, f_idx, self)
+
+                # Учет интерполяции в таймстампе
+                # t = (GlobalIndex * Multiplier) / FPS
+                fw.set_time(global_idx * frame_multiplier, fps)
+
+                fw.lbl_id.setVisible(self.show_frame_ids)
+                fw.lbl_time.setVisible(self.show_timestamps)
+                fw.img_label.mousePressEvent = lambda e, i=img: self.set_preview(i)
+
+                frames_h_layout.addWidget(fw)
+                global_idx += 1
+
+            batch_v_layout.addLayout(frames_h_layout)
+
+            # Квадратная скобка
+            bracket = QFrame()
+            bracket.setFixedHeight(8)
+            bracket.setStyleSheet("border: 2px solid #555; border-top: none; margin-top: -2px;")
+            batch_v_layout.addWidget(bracket)
+
+            if self.show_batch_names:
+                lbl = QLabel(batch.name)
+                lbl.setAlignment(Qt.AlignCenter)
+                lbl.setStyleSheet("color: #5cacee; font-weight: bold;")
+                batch_v_layout.addWidget(lbl)
+
+            self.timeline_layout.addWidget(batch_widget)
 
     # --- Логика изменения кадров ---
     def delete_frame(self, b_idx, f_idx):
@@ -325,33 +443,29 @@ class MainWindow(QMainWindow):
         except:
             return
 
-        # КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: ищем виджет внутри timeline_container, а не всего окна
+        # Определяем положение относительно вьюпорта скролла
         pos = e.position().toPoint()
-        target_widget = self.timeline_container.childAt(pos)
 
-        while target_widget and not isinstance(target_widget, TimelineFrame):
-            target_widget = target_widget.parentWidget()
+        # Находим виджет, на который упал кадр
+        target = self.timeline_container.childAt(pos)
 
-        # Удаляем кадр из старого места
-        frame_to_move = self.project.batches[src_b_idx].frames.pop(src_f_idx)
+        # Идем вверх по иерархии, пока не найдем наш TimelineFrame
+        while target and not isinstance(target, TimelineFrame):
+            target = target.parentWidget()
 
-        if target_widget:
-            dst_b_idx = target_widget.batch_idx
-            dst_f_idx = target_widget.frame_idx
+        # Данные для перемещения (Картинка + ID)
+        moving_frame = self.project.batches[src_b_idx].frames.pop(src_f_idx)
+        moving_id = self.project.batches[src_b_idx].frame_ids.pop(src_f_idx)
 
-            # Если перемещаем внутри одного и того же батча и тянем "вправо",
-            # индекс смещается из-за pop(). Нужна корректировка:
-            if src_b_idx == dst_b_idx and src_f_idx < dst_f_idx:
-                # Мы не корректируем здесь, так как insert вставит ПЕРЕД целевым кадром,
-                # что логично для "вставки между". Но если хочешь вставить ПОСЛЕ,
-                # можно добавить логику проверки половины ширины виджета.
-                pass
-
-            self.project.batches[dst_b_idx].frames.insert(dst_f_idx, frame_to_move)
+        if target:
+            dst_b_idx = target.batch_idx
+            dst_f_idx = target.frame_idx
+            self.project.batches[dst_b_idx].frames.insert(dst_f_idx, moving_frame)
+            self.project.batches[dst_b_idx].frame_ids.insert(dst_f_idx, moving_id)
         else:
-            # Если не попали в виджет, кидаем в конец последнего батча
-            if self.project.batches:
-                self.project.batches[-1].frames.append(frame_to_move)
+            # В конец последнего батча
+            self.project.batches[-1].frames.append(moving_frame)
+            self.project.batches[-1].frame_ids.append(moving_id)
 
         self.refresh_timeline()
 
