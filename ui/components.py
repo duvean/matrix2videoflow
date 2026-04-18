@@ -48,7 +48,8 @@ class MaskPreviewLabel(QLabel):
     def __init__(self, parent_ui):
         super().__init__("Выберите кадр для превью")
         self.parent_ui = parent_ui
-        self.setAlignment(Qt.AlignCenter)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setMinimumWidth(500)
         self.setMouseTracking(True)
 
@@ -352,7 +353,7 @@ class TimelineFrame(QFrame):
             c = "#22c55e"
         else:
             c = "#374151"
-        self.setStyleSheet(f"QFrame{{border:2px solid {c}; background:#131a26; border-radius:6px;}}")
+        self.setStyleSheet(f"QFrame{{border:2px solid {c}; background:#131a26; border-radius:0px;}}")
 
     def set_mask_ui_state(self, show_toggle, in_mask):
         self.mask_toggle_btn.setVisible(show_toggle)
@@ -414,8 +415,8 @@ class BatchItemWidget(QWidget):
         self.container.setStyleSheet("""
             #batchCard {
                 background-color: #1a2234;
-                border: 1px solid #334155;
-                border-radius: 8px;
+                border: 1px solid;
+                border-radius:0px;
             }
         """)
 
@@ -428,7 +429,7 @@ class BatchItemWidget(QWidget):
         # 1. Миниатюра (Превью первого кадра)
         self.thumb_label = QLabel()
         self.thumb_label.setFixedSize(40, 40)
-        self.thumb_label.setStyleSheet("border-radius: 4px; background: #000;")
+        self.thumb_label.setStyleSheet("border-radius:0px; background: #000;")
 
         if first_frame_img is not None:
             # Конвертируем numpy в QPixmap
@@ -464,16 +465,16 @@ class BatchItemWidget(QWidget):
             self.container.setStyleSheet("""
                 #batchCard {
                     background-color: #1f2937;
-                    border: 1px solid #60a5fa;
-                    border-radius: 8px;
+                    border: 1px solid;
+                    border-radius:0px;
                 }
             """)
         else:
             self.container.setStyleSheet("""
                 #batchCard {
                     background-color: #1a2234;
-                    border: 1px solid #334155;
-                    border-radius: 8px;
+                    border: 1px solid;
+                    border-radius:0px;
                 }
             """)
 
@@ -518,42 +519,46 @@ class MainWindow(QMainWindow):
             QMainWindow{background:#0b1220;color:#e2e8f0;}
             QWidget{color:#e2e8f0;}
             QLabel{color:#cbd5e1;}
-            QMenu{background:#111827;color:#e5e7eb;border:1px solid #374151;}
+            QMenu{background:#111827;color:#e5e7eb;border:1px solid;}
             QMenu::item:selected{background:#1f2937;}
-            QGroupBox{border:1px solid #253047;border-radius:8px;margin-top:10px;background:#0f172a;}
+            QGroupBox{border:1px solid;border-radius:0px;margin-top:10px;background:#0f172a;}
             QGroupBox::title{subcontrol-origin:margin;left:8px;padding:0 4px;color:#f3f4f6;}
-            QPushButton{background:#1f2937;border:1px solid #334155;border-radius:6px;padding:6px 10px;color:#e5e7eb;}
+            QPushButton{background:#1f2937;border:1px solid;border-radius:0px;padding:6px 10px;color:#e5e7eb;}
             QPushButton:hover{background:#263348;}
             
             QScrollBar:vertical {background: transparent;width: 8px;margin: 0px;}
-            QScrollBar::handle:vertical {background: #334155;border-radius: 4px;min-height: 20px;}
+            QScrollBar::handle:vertical {background: #334155;border-radius:0px;min-height: 20px;}
             QScrollBar::add-line:vertical, 
             QScrollBar::sub-line:vertical {height: 0px;}
             QScrollBar::add-page:vertical,
             QScrollBar::sub-page:vertical {background: none;}
             QScrollBar:horizontal {background: transparent;height: 8px;margin: 0px;}
-            QScrollBar::handle:horizontal {background: #334155;border-radius: 4px;min-width: 20px;}
+            QScrollBar::handle:horizontal {background: #334155;border-radius:0px;min-width: 20px;}
             QScrollBar::add-line:horizontal,
             QScrollBar::sub-line:horizontal {width: 0px;}
             QScrollBar::add-page:horizontal,
             QScrollBar::sub-page:horizontal {background: none;}
             
-            QToolButton{background:#1f2937;border:1px solid #334155;border-radius:4px;color:#e5e7eb;}
-            QListWidget,QTreeWidget,QScrollArea,QGraphicsView,QSpinBox{background:#111827;border:1px solid #334155;border-radius:6px;color:#e5e7eb;}
-            QProgressBar{background:#111827;border:1px solid #334155;border-radius:8px;}
-            QProgressBar::chunk{background:#22c55e;border-radius:8px;}
+            QToolButton{background:#1f2937;border:1px solid;border-radius:0px;color:#e5e7eb;}
+            QListWidget,QTreeWidget,QScrollArea,QGraphicsView,QSpinBox{background:#111827;border:1px solid;border-radius:0px;color:#e5e7eb;}
+            QProgressBar{background:#111827;border:1px solid;border-radius:0px;}
+            QProgressBar::chunk{background:#22c55e;border-radius:0px;}
             QSplitter::handle{background-color: #0b1220;width: 6px;}
             
-            QTreeWidget {background-color: #111827;border: 1px solid #334155;border-radius: 6px;color: #e5e7eb;outline: none;}
-            QTreeWidget::item {padding: 6px;border-radius: 4px;}
-            QTreeWidget::item:selected {background-color: #1f2937; /* Используем тот же цвет, что в QPushButton:hover */color: #ffffff;border: 1px solid #475569;}
+            QTreeWidget {background-color: #111827;border: 1px solid;border-radius:0px;color: #e5e7eb;outline: none;}
+            QTreeWidget::item {padding: 6px;border-radius:0px;}
+            QTreeWidget::item:selected {background-color: #1f2937; /* Используем тот же цвет, что в QPushButton:hover */color: #ffffff;border: 1px solid;}
             QTreeWidget::item:hover {background-color: #1a2234;}
-            QTreeWidget::item:selected:hover {background-color: #263348;}
+            QTreeWidget::item:selected:hover {background-color: #b677b6;}
             QTreeWidget::header {background-color: #1f2937;color: #e5e7eb;border: none;}
             
             QListWidget {background: #0f172a;border: none;outline: none;padding: 5px;}
             QListWidget::item {background: transparent;border: none;margin-bottom: 4px;}
             QListWidget::item:selected {background: transparent;border: none;}
+            QListWidget {background: #0f172a;border: 1px solid; /* Добавили границу */;padding: 5px;}
+            QListWidget::item {color: #e2e8f0;}
+            QListWidget::item:hover {background: #1e293b; /* Легкая подсветка при наведении */}
+            QListWidget::item:selected {background: #b677b6; /* Яркий синий при выборе */color: #ffffff;}
         """)
 
         self.central_stack = QStackedWidget()
@@ -621,32 +626,32 @@ class MainWindow(QMainWindow):
         self.playback_progress.setRange(0, 1000)
         self.playback_progress.setStyleSheet("""
                     QSlider::groove:horizontal {
-                        border: 1px solid #333;
+                        border: 1px solid;
                         height: 6px;
                         background: #333; /* Цвет правой части (непройденной) */
                         margin: 2px 0;
-                        border-radius: 3px;
+                        border-radius:3px;
                     }
 
                     /* Цвет левой части (прошедшей) */
                     QSlider::sub-page:horizontal {
-                        background: #6c006c; /* Фиолетовый */
-                        border-radius: 3px;
+                        background: #d699d6; /* Фиолетовый */
+                        border-radius:3px;
                     }
 
                     QSlider::handle:horizontal {
                         background: #FFFFFF;
-                        border: 1px solid #FFFFFF;
+                        border: 1px solid;
                         width: 14px;
                         height: 14px;
                         margin: -5px 0;
-                        border-radius: 7px;
+                        border-radius:7px;
                     }
 
                     QSlider::handle:horizontal:hover {
                         /* Если слайдер Read-Only, hover лучше отключить */
                         background: #FFFFFF;
-                        border: 1px solid #FFFFFF;
+                        border: 1px solid;
                     }
                 """)
         self.lbl_play_time = QLabel("00:00:000")
@@ -767,7 +772,7 @@ class MainWindow(QMainWindow):
 
         self.btn_export = QPushButton("Export Video")
         self.btn_export.clicked.connect(self.export_video)
-        self.btn_export.setStyleSheet("background-color: #2b5e2b; color: white;")
+        self.btn_export.setStyleSheet("background-color: #b677b6; color: white;")
 
         self.frames_count_lbl = QLabel("0")
 
