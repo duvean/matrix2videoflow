@@ -526,13 +526,13 @@ class MainWindow(QMainWindow):
             QPushButton:hover{background:#263348;}
             
             QScrollBar:vertical {background: transparent;width: 8px;margin: 0px;}
-            QScrollBar::handle:vertical {background: #dcdcdc;border-radius: 4px;min-height: 20px;}
+            QScrollBar::handle:vertical {background: #334155;border-radius: 4px;min-height: 20px;}
             QScrollBar::add-line:vertical, 
             QScrollBar::sub-line:vertical {height: 0px;}
             QScrollBar::add-page:vertical,
             QScrollBar::sub-page:vertical {background: none;}
             QScrollBar:horizontal {background: transparent;height: 8px;margin: 0px;}
-            QScrollBar::handle:horizontal {background: #dcdcdc;border-radius: 4px;min-width: 20px;}
+            QScrollBar::handle:horizontal {background: #334155;border-radius: 4px;min-width: 20px;}
             QScrollBar::add-line:horizontal,
             QScrollBar::sub-line:horizontal {width: 0px;}
             QScrollBar::add-page:horizontal,
