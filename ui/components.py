@@ -447,6 +447,7 @@ class MainWindow(QMainWindow):
             QGroupBox::title{subcontrol-origin:margin;left:8px;padding:0 4px;color:#f3f4f6;}
             QPushButton{background:#1f2937;border:1px solid #334155;border-radius:6px;padding:6px 10px;color:#e5e7eb;}
             QPushButton:hover{background:#263348;}
+            
             QScrollBar:vertical {background: transparent;width: 8px;margin: 0px;}
             QScrollBar::handle:vertical {background: #dcdcdc;border-radius: 4px;min-height: 20px;}
             QScrollBar::add-line:vertical, 
@@ -459,11 +460,19 @@ class MainWindow(QMainWindow):
             QScrollBar::sub-line:horizontal {width: 0px;}
             QScrollBar::add-page:horizontal,
             QScrollBar::sub-page:horizontal {background: none;}
+            
             QToolButton{background:#1f2937;border:1px solid #334155;border-radius:4px;color:#e5e7eb;}
             QListWidget,QTreeWidget,QScrollArea,QGraphicsView,QSpinBox{background:#111827;border:1px solid #334155;border-radius:6px;color:#e5e7eb;}
             QProgressBar{background:#111827;border:1px solid #334155;border-radius:8px;}
             QProgressBar::chunk{background:#22c55e;border-radius:8px;}
             QSplitter::handle{background-color: #0b1220;width: 6px;}
+            
+            QTreeWidget {background-color: #111827;border: 1px solid #334155;border-radius: 6px;color: #e5e7eb;outline: none;}
+            QTreeWidget::item {padding: 6px;border-radius: 4px;}
+            QTreeWidget::item:selected {background-color: #1f2937; /* Используем тот же цвет, что в QPushButton:hover */color: #ffffff;border: 1px solid #475569;}
+            QTreeWidget::item:hover {background-color: #1a2234;}
+            QTreeWidget::item:selected:hover {background-color: #263348;}
+            QTreeWidget::header {background-color: #1f2937;color: #e5e7eb;border: none;}
         """)
 
         self.central_stack = QStackedWidget()
@@ -609,7 +618,7 @@ class MainWindow(QMainWindow):
         lib_group = QGroupBox("Processor Library")
         lgl = QVBoxLayout(lib_group)
         self.explorer_tree = QTreeWidget()
-        self.explorer_tree.setHeaderLabels(["Folders"])
+        self.explorer_tree.setHeaderHidden(True)
         self.populate_explorer_tree()
         self.explorer_tree.itemDoubleClicked.connect(self.on_explorer_item_activated)
         lgl.addWidget(self.explorer_tree)
@@ -837,7 +846,7 @@ class MainWindow(QMainWindow):
             bl.addLayout(hl)
             if self.show_batch_names:
                 lb = QLabel(batch.name)
-                lb.setAlignment(Qt.AlignCenter)
+                lb.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 lb.setStyleSheet("color:#60a5fa;font-weight:bold;")
                 bl.addWidget(lb)
             self.timeline_layout.addWidget(bw)
