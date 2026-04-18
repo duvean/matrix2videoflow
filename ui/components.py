@@ -322,8 +322,9 @@ class TimelineFrame(QFrame):
         self.lbl_id.setStyleSheet("color:#94a3b8; font-size:9px; border:none;")
         layout.addWidget(self.lbl_id)
 
-        self.lbl_time = QLabel("TIME: 00:00:000")
+        self.lbl_time = QLabel("00:00:000")
         self.lbl_time.setStyleSheet("color:#86efac; font-family:'Consolas'; font-size:10px; border:none;")
+        self.lbl_time.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.lbl_time)
 
         btns = QHBoxLayout()
@@ -363,7 +364,7 @@ class TimelineFrame(QFrame):
         m = tms // 60000
         s = (tms % 60000) // 1000
         ms = tms % 1000
-        self.lbl_time.setText(f"TIME: {m:02}:{s:02}:{ms:03}")
+        self.lbl_time.setText(f"{m:02}:{s:02}:{ms:03}")
 
     def update_pixmap(self, np_img):
         rgb = cv2.cvtColor(np_img, cv2.COLOR_BGR2RGB)
@@ -399,6 +400,80 @@ class TimelineFrame(QFrame):
         path, _ = QFileDialog.getOpenFileName(None, "Replace", "", "Images (*.jpg *.png *.jfif)")
         if path:
             self.parent_ui.replace_frame(self.batch_idx, self.frame_idx, cv2.imread(path))
+
+
+class BatchItemWidget(QWidget):
+    def __init__(self, batch_name, first_frame_img, parent=None):
+        super().__init__(parent)
+
+        # Главный контейнер с рамкой для эффекта "карточки"
+        self.container = QFrame()
+        self.container.setObjectName("batchCard")
+        self.container.setStyleSheet("""
+            #batchCard {
+                background-color: #1a2234;
+                border: 1px solid #334155;
+                border-radius: 8px;
+            }
+        """)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 4, 0, 4)
+
+        card_layout = QHBoxLayout(self.container)
+        card_layout.setContentsMargins(8, 4, 8, 8)
+
+        # 1. Миниатюра (Превью первого кадра)
+        self.thumb_label = QLabel()
+        self.thumb_label.setFixedSize(40, 40)
+        self.thumb_label.setStyleSheet("border-radius: 4px; background: #000;")
+
+        if first_frame_img is not None:
+            # Конвертируем numpy в QPixmap
+            h, w, _ = first_frame_img.shape
+            qimg = QImage(first_frame_img.data, w, h, w * 3, QImage.Format_BGR888)
+            pix = QPixmap.fromImage(qimg).scaled(50, 50, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+            self.thumb_label.setPixmap(pix)
+            self.thumb_label.setScaledContents(True)
+
+            # 2. Название с авто-сокращением (Ellipsis)
+            self.name_label = QLabel(batch_name)
+            self.name_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            font_metrics = self.name_label.fontMetrics()
+            elided_text = font_metrics.elidedText(batch_name, Qt.ElideRight, 150)
+            self.name_label.setText(elided_text)
+            self.name_label.setToolTip(batch_name)
+
+            # 3. Иконка перетаскивания
+            self.grabber_label = QLabel("⠿")
+            self.grabber_label.setFixedWidth(20)
+            self.grabber_label.setAlignment(Qt.AlignCenter)
+            self.grabber_label.setStyleSheet("color: #475569; font-size: 18px;")
+
+            card_layout.addWidget(self.thumb_label)
+            card_layout.addWidget(self.name_label)
+            card_layout.addWidget(self.grabber_label)
+
+            layout.addWidget(self.container)
+
+    # Метод для обновления стиля при выделении (вызывается из списка)
+    def set_selected(self, is_selected):
+        if is_selected:
+            self.container.setStyleSheet("""
+                #batchCard {
+                    background-color: #1f2937;
+                    border: 1px solid #60a5fa;
+                    border-radius: 8px;
+                }
+            """)
+        else:
+            self.container.setStyleSheet("""
+                #batchCard {
+                    background-color: #1a2234;
+                    border: 1px solid #334155;
+                    border-radius: 8px;
+                }
+            """)
 
 
 class MainWindow(QMainWindow):
@@ -473,6 +548,10 @@ class MainWindow(QMainWindow):
             QTreeWidget::item:hover {background-color: #1a2234;}
             QTreeWidget::item:selected:hover {background-color: #263348;}
             QTreeWidget::header {background-color: #1f2937;color: #e5e7eb;border: none;}
+            
+            QListWidget {background: #0f172a;border: none;outline: none;padding: 5px;}
+            QListWidget::item {background: transparent;border: none;margin-bottom: 4px;}
+            QListWidget::item:selected {background: transparent;border: none;}
         """)
 
         self.central_stack = QStackedWidget()
@@ -506,6 +585,7 @@ class MainWindow(QMainWindow):
         left = QGroupBox("Batches")
         ll = QVBoxLayout(left)
         self.batch_list = QListWidget()
+        self.batch_list.setMinimumWidth(300)
         self.batch_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.batch_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.batch_list.customContextMenuRequested.connect(self.show_batch_context_menu)
@@ -757,6 +837,7 @@ class MainWindow(QMainWindow):
             b = Batch(Path(f).name, frames)
             self.project.batches.append(b)
             self.batch_list.addItem(b.name)
+            self.refresh_batch_list_ui()
         self.refresh_timeline()
         self.invalidate_prerender()
 
@@ -867,6 +948,27 @@ class MainWindow(QMainWindow):
             btn.setText(str(idx + 1))
             btn.clicked.connect(lambda _, i=idx: self.toggle_mask_frame_index_for_all_batches(i))
             self.batch_index_btns_layout.addWidget(btn)
+
+    def refresh_batch_list_ui(self):
+        self.batch_list.clear()
+
+        for batch in self.project.batches:
+            item = QListWidgetItem(self.batch_list)
+            first_frame = batch.frames[0] if len(batch.frames) > 0 else None
+            custom_widget = BatchItemWidget(batch.name, first_frame)
+            item.setSizeHint(custom_widget.sizeHint())
+
+            self.batch_list.addItem(item)
+            self.batch_list.setItemWidget(item, custom_widget)
+
+        self.batch_list.itemSelectionChanged.connect(self.update_batch_styles)
+
+    def update_batch_styles(self):
+        for i in range(self.batch_list.count()):
+            item = self.batch_list.item(i)
+            widget = self.batch_list.itemWidget(item)
+            if widget:
+                widget.set_selected(item.isSelected())
 
     def toggle_mask_frame_index_for_all_batches(self, frame_idx):
         if self.current_mask_index is None:
