@@ -9,8 +9,8 @@ from PySide6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QGraphicsView, QGraphicsScene, QGraphicsRectItem, QGraphicsTextItem,
     QApplication, QSpacerItem, QSlider
 )
-from PySide6.QtGui import QImage, QPixmap, QDrag, QAction, QPainter, QPen, QColor, QBrush, QFont
-from PySide6.QtCore import Qt, QMimeData, QEvent, QTimer, QPointF, QRectF, Signal
+from PySide6.QtGui import QImage, QPixmap, QDrag, QAction, QPainter, QPen, QColor, QBrush, QFont, QScreen
+from PySide6.QtCore import Qt, QMimeData, QEvent, QTimer, QPointF, QRectF, Signal, QPoint
 
 from core import VideoProcessor, ProjectManager, Batch
 
@@ -484,7 +484,9 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         QApplication.setFont(QFont("DejaVu Sans", 10))
-        #self.setWindowFlags(Qt.FramelessWindowHint)
+        self.setWindowFlags(Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.old_pos = QPoint()
 
         self.processor = VideoProcessor()
         self.project = ProjectManager()
@@ -513,7 +515,7 @@ class MainWindow(QMainWindow):
         self.current_playback_index = 0
         self.is_playing = False
 
-        self.setWindowTitle("Batch Video Studio")
+        self.setWindowTitle("Batchframe Studio")
         self.resize(1520, 940)
         self.setStyleSheet("""
             QMainWindow{background:#0b1220;color:#e2e8f0;}
@@ -561,13 +563,74 @@ class MainWindow(QMainWindow):
             QListWidget::item:selected {background: #b677b6; /* Яркий синий при выборе */color: #ffffff;}
         """)
 
+        self.main_container = QWidget()
+        self.main_container.setObjectName("MainContainer")
+        self.main_container.setStyleSheet("#MainContainer {background:#0b1220;border: 0px;border-radius: 8px;}")
+        self.main_layout = QVBoxLayout(self.main_container)
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        self.main_layout.setSpacing(0)
+
+        self.main_layout.addWidget(self.init_title_bar())
+
         self.central_stack = QStackedWidget()
-        self.setCentralWidget(self.central_stack)
+        self.main_layout.addWidget(self.central_stack)
+
         self.welcome_screen = self.init_welcome_ui()
         self.editor_screen = self.init_editor_ui()
         self.central_stack.addWidget(self.welcome_screen)
         self.central_stack.addWidget(self.editor_screen)
-        self.central_stack.setCurrentWidget(self.welcome_screen)
+
+        self.setCentralWidget(self.main_container)
+        self.center()
+
+    def init_title_bar(self):
+        self.title_bar = QWidget()
+        self.title_bar.setFixedHeight(35)
+        self.title_bar.setStyleSheet("background: #0f172a; border-top-left-radius: 8px; border-top-right-radius: 8px;")
+
+        layout = QHBoxLayout(self.title_bar)
+        layout.setContentsMargins(10, 0, 10, 0)
+        layout.setSpacing(8)
+
+        title_label = QLabel("Batch Video Studio")
+        title_label.setStyleSheet("color: #64748b; font-weight: bold; padding-left: 5px;")
+        layout.addWidget(title_label)
+        layout.addStretch()
+
+        for color in ["#27c93f", "#ffbd2e", "#b677b6"]:
+            btn = QPushButton()
+            btn.setFixedSize(12, 12)
+            btn.setStyleSheet(f"background: {color}; border-radius: 6px; border: none;")
+            layout.addWidget(btn)
+
+            if color == "#b677b6": btn.clicked.connect(self.close)
+            if color == "#ffbd2e": btn.clicked.connect(self.toggle_maximized)  # Разворачивание
+            if color == "#27c93f": btn.clicked.connect(self.showMinimized)
+
+        return self.title_bar
+
+    def toggle_maximized(self):
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
+
+    def center(self):
+        screen = QScreen.availableGeometry(QApplication.primaryScreen())
+        window_rect = self.frameGeometry()
+        center_point = screen.center()
+        window_rect.moveCenter(center_point)
+        self.move(window_rect.topLeft())
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.old_pos = event.globalPos()
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() == Qt.LeftButton:
+            delta = QPoint(event.globalPos() - self.old_pos)
+            self.move(self.pos() + delta)
+            self.old_pos = event.globalPos()
 
     def init_welcome_ui(self):
         w = QWidget()
@@ -772,7 +835,7 @@ class MainWindow(QMainWindow):
 
         self.btn_export = QPushButton("Export Video")
         self.btn_export.clicked.connect(self.export_video)
-        self.btn_export.setStyleSheet("background-color: #b677b6; color: white;")
+        self.btn_export.setStyleSheet("background-color:#b677b6;color:white;border-radius:0px;min-width:200px;")
 
         self.frames_count_lbl = QLabel("0")
 
@@ -784,7 +847,7 @@ class MainWindow(QMainWindow):
         bottom_controls.addWidget(self.frames_count_lbl)
         bottom_controls.addWidget(QLabel(" |  FPS:"))
         bottom_controls.addWidget(self.fps_spin)
-        bottom_controls.addSpacerItem(QSpacerItem(20, 0, QSizePolicy.Expanding, QSizePolicy.Minimum))
+        #bottom_controls.addSpacerItem(QSpacerItem(20, 0, QSizePolicy.Expanding, QSizePolicy.Minimum))
         bottom_controls.addWidget(self.btn_export)
 
         root.addLayout(bottom_controls)
@@ -1228,15 +1291,15 @@ class MainWindow(QMainWindow):
         if row < 0:
             return
         m = QMenu()
-        a_del = QAction("Удалить маску", self)
-        a_edit = QAction("Редактировать маску", self)
+        a_edit = QAction("Редактировать", self)
         a_add = QAction("Добавить кадры", self)
+        a_del = QAction("Удалить", self)
         a_del.triggered.connect(lambda: self.delete_mask(row))
         a_edit.triggered.connect(self.start_mask_edit_mode)
         a_add.triggered.connect(self.start_mask_add_mode)
-        m.addAction(a_del)
-        m.addAction(a_edit)
         m.addAction(a_add)
+        m.addAction(a_edit)
+        m.addAction(a_del)
         m.exec_(self.mask_list.mapToGlobal(pos))
 
     def show_mask_frames_context_menu(self, pos):
