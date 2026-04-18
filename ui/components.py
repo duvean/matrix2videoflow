@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QApplication, QSpacerItem, QSlider
 )
 from PySide6.QtGui import QImage, QPixmap, QDrag, QAction, QPainter, QPen, QColor, QBrush, QFont
-from PySide6.QtCore import Qt, QMimeData, QEvent, QTimer, QPointF, QRectF
+from PySide6.QtCore import Qt, QMimeData, QEvent, QTimer, QPointF, QRectF, Signal
 
 from core import VideoProcessor, ProjectManager, Batch
 
@@ -198,6 +198,7 @@ class GraphNodeItem(QGraphicsRectItem):
 
 
 class ProcessGraphView(QGraphicsView):
+    pipeline_changed = Signal(list)
     def __init__(self):
         super().__init__()
         self.scene = QGraphicsScene(self)
@@ -238,6 +239,7 @@ class ProcessGraphView(QGraphicsView):
             self.add_edge(ids[i], ids[i + 1])
 
         self.scene.setSceneRect(self.scene.itemsBoundingRect().adjusted(-20, -20, 40, 40))
+        self.pipeline_changed.emit(process_chain)
 
     def add_edge(self, src_id, dst_id):
         src = self.node_items.get(src_id)
@@ -662,6 +664,7 @@ class MainWindow(QMainWindow):
         graph_group = QGroupBox("Processing Pipeline")
         ggl = QVBoxLayout(graph_group)
         self.graph_view = ProcessGraphView()
+        self.graph_view.pipeline_changed.connect(self.update_total_frames_ui)
         ggl.addWidget(self.graph_view)
 
         row = QHBoxLayout()
@@ -896,7 +899,7 @@ class MainWindow(QMainWindow):
         if self.current_mask_index is not None:
             current_mask_frames = self.masks[self.current_mask_index]['frame_ids']
 
-        flat_count = 0
+        total = self.calculate_total_frames()
         for b_idx, batch in enumerate(self.project.batches):
             bw = QWidget()
             bl = QVBoxLayout(bw)
@@ -922,7 +925,6 @@ class MainWindow(QMainWindow):
                 self.timeline_widgets[fid] = fw
                 hl.addWidget(fw)
                 global_idx += 1
-                flat_count += 1
 
             bl.addLayout(hl)
             if self.show_batch_names:
@@ -932,7 +934,7 @@ class MainWindow(QMainWindow):
                 bl.addWidget(lb)
             self.timeline_layout.addWidget(bw)
 
-        self.frames_count_lbl.setText(str(flat_count))
+        self.frames_count_lbl.setText(str(total))
         self.refresh_current_mask_frames_list()
         self.rebuild_batch_index_buttons()
 
@@ -1012,6 +1014,17 @@ class MainWindow(QMainWindow):
 
         self.refresh_timeline()
         self.invalidate_prerender()
+
+    def calculate_total_frames(self):
+        initial_frames = sum(len(batch.frames) for batch in self.project.batches)
+        n = len(self.process_chain)
+        multiplier = 2 ** n
+        return initial_frames * multiplier
+
+    def update_total_frames_ui(self, new_chain):
+        self.process_chain = new_chain
+        total = self.calculate_total_frames()
+        self.frames_count_lbl.setText(str(total))
 
     def replace_frame(self, b_idx, f_idx, img):
         if img is None:
