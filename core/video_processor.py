@@ -121,15 +121,7 @@ class VideoProcessor(QObject):
     def process_sequence(self, frames, pipeline):
         current_frames = frames
         for step in pipeline:
-            new_sequence = []
-            for i in range(len(current_frames) - 1):
-                f1 = current_frames[i]
-                f2 = current_frames[i + 1]
-                mid = self.interpolate_film(f1, f2) if step == 'film' else self.interpolate_opencv(f1, f2)
-                new_sequence.append(f1)
-                new_sequence.append(mid)
-            new_sequence.append(current_frames[-1])
-            current_frames = new_sequence
+            current_frames = self.apply_step(current_frames, step)
         return current_frames
 
     def process_sequence_fast_cv(self, frames, interpolation_depth):
@@ -145,6 +137,60 @@ class VideoProcessor(QObject):
             new_sequence.append(current_frames[-1])
             current_frames = new_sequence
         return current_frames
+
+    def apply_step(self, current_frames, step):
+        if not current_frames:
+            return []
+        if step in ('film', 'cv'):
+            new_sequence = []
+            for i in range(len(current_frames) - 1):
+                f1 = current_frames[i]
+                f2 = current_frames[i + 1]
+                mid = self.interpolate_film(f1, f2) if step == 'film' else self.interpolate_opencv(f1, f2)
+                new_sequence.append(f1)
+                new_sequence.append(mid)
+            new_sequence.append(current_frames[-1])
+            return new_sequence
+        if step == "pixel_sort":
+            total = max(1, len(current_frames) - 1)
+            return [self.pixel_sort_frame(frame, i / total) for i, frame in enumerate(current_frames)]
+        return current_frames
+
+    def process_sequence_with_graph(self, frames, graph_manager):
+        steps = graph_manager.list_processing_steps()
+        current_frames = frames
+        for step in steps:
+            current_frames = self.apply_step(current_frames, step)
+        return current_frames
+
+    def pixel_sort_frame(self, frame, time_norm=0.0, threshold=0.45, direction="horizontal", strength=0.8):
+        if frame is None:
+            return frame
+        out = frame.copy()
+        gray = cv2.cvtColor(out, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+        animated_threshold = float(np.clip(threshold + 0.2 * np.sin(time_norm * np.pi * 2.0), 0.05, 0.95))
+        trigger = gray > animated_threshold
+        if direction not in ("horizontal", "vertical"):
+            direction = "horizontal"
+
+        if direction == "vertical":
+            out = np.transpose(out, (1, 0, 2))
+            trigger = trigger.T
+
+        for r in range(out.shape[0]):
+            idx = np.where(trigger[r])[0]
+            if idx.size < 2:
+                continue
+            row = out[r, idx, :]
+            brightness = np.sum(row.astype(np.int32), axis=1)
+            order = np.argsort(brightness)
+            blend = float(np.clip(strength, 0.0, 1.0))
+            sorted_row = row[order]
+            out[r, idx, :] = (row * (1.0 - blend) + sorted_row * blend).astype(np.uint8)
+
+        if direction == "vertical":
+            out = np.transpose(out, (1, 0, 2))
+        return out
 
     def split_batch(self, image_path, grid_size=3):
         img = cv2.imread(image_path)
