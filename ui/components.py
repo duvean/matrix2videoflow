@@ -7,12 +7,12 @@ from PySide6.QtWidgets import (
     QFileDialog, QSplitter, QGroupBox, QFormLayout, QSpinBox, QToolButton, QStyle, QFrame,
     QAbstractItemView, QSizePolicy, QStackedWidget, QMenu, QListWidgetItem, QProgressBar, QMessageBox,
     QTreeWidget, QTreeWidgetItem, QGraphicsView, QGraphicsScene, QGraphicsRectItem, QGraphicsTextItem,
-    QApplication, QSpacerItem, QSlider, QStyleFactory
+    QApplication, QSpacerItem, QSlider, QStyleFactory, QDialog, QGraphicsLineItem
 )
-from PySide6.QtGui import QImage, QPixmap, QDrag, QAction, QPainter, QPen, QColor, QBrush, QFont, QScreen
+from PySide6.QtGui import QImage, QPixmap, QDrag, QAction, QPainter, QPen, QColor, QBrush, QFont, QScreen, QPainterPath
 from PySide6.QtCore import Qt, QMimeData, QEvent, QTimer, QPointF, QRectF, Signal, QPoint
 
-from core import VideoProcessor, ProjectManager, Batch
+from core import VideoProcessor, ProjectManager, Batch, NodeGraphManager
 
 
 class MaskListItemWidget(QWidget):
@@ -185,64 +185,83 @@ class MaskPreviewLabel(QLabel):
 
 class GraphNodeItem(QGraphicsRectItem):
     def __init__(self, node_id, label, color):
-        super().__init__(0, 0, 120, 44)
+        super().__init__(0, 0, 150, 56)
         self.node_id = node_id
         self.label = label
         self.setBrush(QBrush(QColor(color)))
-        self.setPen(QPen(QColor("#64748b"), 1.4))
+        self.setPen(QPen(QColor("#64748b"), 1.2))
         self.setFlag(QGraphicsRectItem.ItemIsMovable, True)
         self.setFlag(QGraphicsRectItem.ItemIsSelectable, True)
 
         self.txt = QGraphicsTextItem(label, self)
         self.txt.setDefaultTextColor(QColor("#e5e7eb"))
-        self.txt.setPos(10, 10)
+        self.txt.setPos(12, 15)
+
+
+class GraphEdgeItem(QGraphicsLineItem):
+    def __init__(self, src_id, dst_id):
+        super().__init__()
+        self.src_id = src_id
+        self.dst_id = dst_id
+        self.setPen(QPen(QColor("#a78bfa"), 2))
+        self.setFlag(QGraphicsLineItem.ItemIsSelectable, True)
 
 
 class ProcessGraphView(QGraphicsView):
     pipeline_changed = Signal(list)
-    def __init__(self):
+
+    def __init__(self, graph_manager=None):
         super().__init__()
+        self.graph_manager = graph_manager or NodeGraphManager()
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
         self.setRenderHints(QPainter.Antialiasing)
         self.setMinimumHeight(230)
-        self.edges = []
         self.node_items = {}
+        self.edge_items = []
         self.connect_start = None
+        self._is_panning = False
+        self._pan_anchor = QPoint()
+        self.setTransformationAnchor(QGraphicsView.NoAnchor)
+        self.setResizeAnchor(QGraphicsView.NoAnchor)
+        self.setDragMode(QGraphicsView.RubberBandDrag)
+        self.rebuild_graph()
 
     def clear_graph(self):
         self.scene.clear()
-        self.edges = []
         self.node_items = {}
+        self.edge_items = []
         self.connect_start = None
 
     def rebuild_pipeline(self, process_chain):
+        input_id = self.graph_manager.find_by_type("input")
+        output_id = self.graph_manager.find_by_type("output")
+        if input_id is None or output_id is None:
+            return
+        self.graph_manager.edges = [e for e in self.graph_manager.edges if e.src_id != input_id]
+        prev_id = input_id
+        for step in process_chain:
+            node_id = self.graph_manager.add_node(step)
+            self.graph_manager.add_edge(prev_id, node_id)
+            prev_id = node_id
+        self.graph_manager.add_edge(prev_id, output_id)
+        self.graph_manager.auto_layout()
+        self.rebuild_graph()
+
+    def rebuild_graph(self):
         self.clear_graph()
-        nodes = ["input", *process_chain, "output"]
-        palette = {
-            "input": "#334155",
-            "output": "#334155",
-            "film": "#0f766e",
-            "cv": "#1d4ed8"
-        }
-
-        x = 20
-        y = 40
-        for i, name in enumerate(nodes):
-            item = GraphNodeItem(f"n{i}", name.upper(), palette.get(name, "#3b4252"))
-            item.setPos(x, y + (30 if i % 2 else 0))
+        for node_id, node in self.graph_manager.nodes.items():
+            item = GraphNodeItem(node_id, node.definition.title, node.definition.color)
+            item.setPos(node.pos[0], node.pos[1])
             self.scene.addItem(item)
-            self.node_items[item.node_id] = item
-            x += 155
+            self.node_items[node_id] = item
 
-        ids = list(self.node_items.keys())
-        for i in range(len(ids) - 1):
-            self.add_edge(ids[i], ids[i + 1])
-
+        for edge in self.graph_manager.edges:
+            self.add_edge_item(edge.src_id, edge.dst_id)
         self.scene.setSceneRect(self.scene.itemsBoundingRect().adjusted(-20, -20, 40, 40))
-        self.pipeline_changed.emit(process_chain)
+        self.pipeline_changed.emit(self.graph_manager.list_processing_steps())
 
-    def add_edge(self, src_id, dst_id):
+    def add_edge_item(self, src_id, dst_id):
         src = self.node_items.get(src_id)
         dst = self.node_items.get(dst_id)
         if not src or not dst:
@@ -253,39 +272,124 @@ class ProcessGraphView(QGraphicsView):
         dx = dst.scenePos().x()
         dy = dst.scenePos().y() + dst.rect().height() / 2
 
-        line = self.scene.addLine(sx, sy, dx, dy, QPen(QColor("#60a5fa"), 2))
-        self.edges.append((src_id, dst_id, line))
+        edge_item = GraphEdgeItem(src_id, dst_id)
+        edge_item.setLine(sx, sy, dx, dy)
+        self.scene.addItem(edge_item)
+        self.edge_items.append(edge_item)
 
     def refresh_edges(self):
-        for src_id, dst_id, line in self.edges:
-            src = self.node_items.get(src_id)
-            dst = self.node_items.get(dst_id)
+        for edge in self.edge_items:
+            src = self.node_items.get(edge.src_id)
+            dst = self.node_items.get(edge.dst_id)
             if not src or not dst:
                 continue
             sx = src.scenePos().x() + src.rect().width()
             sy = src.scenePos().y() + src.rect().height() / 2
             dx = dst.scenePos().x()
             dy = dst.scenePos().y() + dst.rect().height() / 2
-            line.setLine(sx, sy, dx, dy)
+            edge.setLine(sx, sy, dx, dy)
 
     def mousePressEvent(self, event):
         item = self.itemAt(event.pos())
-        if isinstance(item, GraphNodeItem):
+        if event.button() == Qt.MiddleButton:
+            self._is_panning = True
+            self._pan_anchor = event.pos()
+            self.setCursor(Qt.ClosedHandCursor)
+            return
+        if event.button() == Qt.RightButton and isinstance(item, GraphEdgeItem):
+            self.graph_manager.remove_edge(item.src_id, item.dst_id)
+            self.rebuild_graph()
+            return
+        if event.button() == Qt.LeftButton and isinstance(item, GraphNodeItem):
             if self.connect_start is None:
                 self.connect_start = item.node_id
             else:
                 if self.connect_start != item.node_id:
-                    self.add_edge(self.connect_start, item.node_id)
+                    self.graph_manager.add_edge(self.connect_start, item.node_id)
+                    self.rebuild_graph()
                 self.connect_start = None
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        if self._is_panning:
+            delta = self._pan_anchor - event.pos()
+            self._pan_anchor = event.pos()
+            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() + delta.x())
+            self.verticalScrollBar().setValue(self.verticalScrollBar().value() + delta.y())
+            return
         super().mouseMoveEvent(event)
+        for node_id, item in self.node_items.items():
+            self.graph_manager.update_node_position(node_id, item.scenePos().x(), item.scenePos().y())
         self.refresh_edges()
 
     def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MiddleButton:
+            self._is_panning = False
+            self.setCursor(Qt.ArrowCursor)
+            return
         super().mouseReleaseEvent(event)
         self.refresh_edges()
+
+    def wheelEvent(self, event):
+        cursor_scene = self.mapToScene(event.position().toPoint())
+        factor = 1.12 if event.angleDelta().y() > 0 else 0.9
+        self.scale(factor, factor)
+        cursor_scene_after = self.mapToScene(event.position().toPoint())
+        delta = cursor_scene_after - cursor_scene
+        self.translate(delta.x(), delta.y())
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            removed = False
+            for item in self.scene.selectedItems():
+                if isinstance(item, GraphNodeItem):
+                    self.graph_manager.remove_node(item.node_id)
+                    removed = True
+                if isinstance(item, GraphEdgeItem):
+                    self.graph_manager.remove_edge(item.src_id, item.dst_id)
+                    removed = True
+            if removed:
+                self.rebuild_graph()
+                return
+        super().keyPressEvent(event)
+
+    def drawBackground(self, painter, rect):
+        super().drawBackground(painter, rect)
+        painter.fillRect(rect, QColor("#0f172a"))
+        grid_pen = QPen(QColor("#1f2937"), 1)
+        painter.setPen(grid_pen)
+        grid_size = 30
+        left = int(rect.left()) - (int(rect.left()) % grid_size)
+        top = int(rect.top()) - (int(rect.top()) % grid_size)
+        x = left
+        while x < rect.right():
+            painter.drawLine(x, rect.top(), x, rect.bottom())
+            x += grid_size
+        y = top
+        while y < rect.bottom():
+            painter.drawLine(rect.left(), y, rect.right(), y)
+            y += grid_size
+
+    def fit_graph(self):
+        self.fitInView(self.scene.itemsBoundingRect().adjusted(-50, -50, 50, 50), Qt.KeepAspectRatio)
+
+    def auto_format(self):
+        self.graph_manager.auto_layout()
+        self.rebuild_graph()
+
+    def add_processor_node(self, node_type):
+        node_id = self.graph_manager.add_node(node_type, (80, 120))
+        output_id = self.graph_manager.find_by_type("output")
+        pipeline_nodes = self.graph_manager.ordered_pipeline_nodes()
+        prev = self.graph_manager.find_by_type("input")
+        if pipeline_nodes:
+            prev = pipeline_nodes[-1]
+        if prev and output_id:
+            self.graph_manager.remove_edge(prev, output_id)
+            self.graph_manager.add_edge(prev, node_id)
+            self.graph_manager.add_edge(node_id, output_id)
+        self.graph_manager.auto_layout()
+        self.rebuild_graph()
 
 
 class TimelineFrame(QFrame):
@@ -490,6 +594,7 @@ class MainWindow(QMainWindow):
 
         self.processor = VideoProcessor()
         self.project = ProjectManager()
+        self.node_graph = NodeGraphManager()
 
         self.grid_size = 4
         self.show_batch_names = True
@@ -628,6 +733,20 @@ QTreeWidget::item:selected {
         else:
             self.showMaximized()
 
+    def open_graph_fullscreen(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Pipeline Editor")
+        dialog.setWindowState(Qt.WindowFullScreen)
+        layout = QVBoxLayout(dialog)
+        expanded = ProcessGraphView(self.node_graph)
+        expanded.scale(1.35, 1.35)
+        expanded.fit_graph()
+        expanded.pipeline_changed.connect(self.update_total_frames_ui)
+        layout.addWidget(expanded)
+        dialog.exec()
+        self.graph_view.rebuild_graph()
+        self.graph_view.fit_graph()
+
     def center(self):
         screen = QScreen.availableGeometry(QApplication.primaryScreen())
         window_rect = self.frameGeometry()
@@ -744,7 +863,27 @@ QTreeWidget::item:selected {
 
         graph_group = QGroupBox("Processing Pipeline")
         ggl = QVBoxLayout(graph_group)
-        self.graph_view = ProcessGraphView()
+        graph_toolbar = QHBoxLayout()
+        graph_toolbar.addStretch()
+        self.btn_graph_fullscreen = QToolButton()
+        self.btn_graph_fullscreen.setToolTip("Fullscreen")
+        self.btn_graph_fullscreen.setText("⛶")
+        self.btn_graph_fullscreen.clicked.connect(self.open_graph_fullscreen)
+        self.btn_graph_fit = QToolButton()
+        self.btn_graph_fit.setToolTip("Auto-scale to window")
+        self.btn_graph_fit.setText("⌖")
+        self.btn_graph_fit.clicked.connect(lambda: self.graph_view.fit_graph())
+        self.btn_graph_format = QToolButton()
+        self.btn_graph_format.setToolTip("Auto-format graph")
+        self.btn_graph_format.setText("☷")
+        self.btn_graph_format.clicked.connect(lambda: self.graph_view.auto_format())
+        graph_toolbar.addWidget(self.btn_graph_fullscreen)
+        graph_toolbar.addWidget(self.btn_graph_fit)
+        graph_toolbar.addWidget(self.btn_graph_format)
+        ggl.addLayout(graph_toolbar)
+
+        self.graph_view = ProcessGraphView(self.node_graph)
+        self.graph_view.setFocusPolicy(Qt.StrongFocus)
         self.graph_view.pipeline_changed.connect(self.update_total_frames_ui)
         ggl.addWidget(self.graph_view)
 
@@ -870,51 +1009,48 @@ QTreeWidget::item:selected {
 
         root.addLayout(bottom_controls)
 
-        self.graph_view.rebuild_pipeline(self.process_chain)
+        self.graph_view.rebuild_graph()
+        self.graph_view.fit_graph()
         return w
 
     def populate_explorer_tree(self):
         self.explorer_tree.clear()
-        self.explorer_tree.setIndentation(20)  # Отступ веток
-
-        # Root
-        root = QTreeWidgetItem(self.explorer_tree, ["Folders"])
-
-        # Branch 1
-        interp = QTreeWidgetItem(root, ["Interpolation"])
-        QTreeWidgetItem(interp, ["CV"])
-        QTreeWidgetItem(interp, ["RIFE"])
-        QTreeWidgetItem(interp, ["FILM"])
-
-        # Branch 2
-        upscalers = QTreeWidgetItem(root, ["Upscalers"])
-        QTreeWidgetItem(upscalers, ["Enhance AI"])
-        QTreeWidgetItem(upscalers, ["Super Resolution"])
-
-        # Branch 3
-        QTreeWidgetItem(root, ["Other Categories"])
-
+        self.explorer_tree.setIndentation(20)
+        root = QTreeWidgetItem(self.explorer_tree, ["Handlers"])
+        categories = {
+            "Interpolation": ["CV", "FILM"],
+            "Temporal Effects": ["Datamoshing", "Echo/Ghosting", "Optical Flow Distortion"],
+            "Analog Stylization": ["Dithering", "Glitch Generator", "ASCII/ANSI"],
+            "Intelligent Blending": ["Style Transfer", "Edge Detection", "EbSynth-like"],
+            "Experimental": ["Slit-scan", "Pixel Sort", "Frame Morphing"],
+            "Color & Luminance": ["Posterization", "Reaction-Diffusion", "RGB Split"],
+            "Circuit": ["Circuit Bending", "Optical Flow Feedback"],
+            "Generators": ["Time Value"],
+        }
+        for name, leaves in categories.items():
+            branch = QTreeWidgetItem(root, [name])
+            for leaf in leaves:
+                QTreeWidgetItem(branch, [leaf])
+            branch.setExpanded(name in ("Interpolation", "Experimental"))
         root.setExpanded(True)
-        interp.setExpanded(True)
-        upscalers.setExpanded(True)
 
     def on_explorer_item_activated(self, item, column):
         leaf = item.text(0).lower()
         parent = item.parent()
-        if not parent: return
+        if not parent:
+            return
 
         folder = parent.text(0).lower()
 
         if folder == "interpolation":
-            if leaf in ("cv", "rife", "film"):
-                print(f"Добавляем в цепочку: {leaf}")
-                self.process_chain.append(leaf)
-                self.graph_view.rebuild_pipeline(self.process_chain)
+            if leaf in ("cv", "film"):
+                self.graph_view.add_processor_node(leaf)
                 self.invalidate_prerender()
-
-        elif folder == "upscalers":
-            # TODO Когда добавятся апскейлеры
-            print(f"Выбран апскейлер: {leaf}")
+        elif leaf == "pixel sort":
+            self.graph_view.add_processor_node("pixel_sort")
+            self.invalidate_prerender()
+        elif leaf == "time value":
+            self.graph_view.add_processor_node("time_value")
 
     def start_new_project(self, size):
         self.grid_size = size
@@ -1001,7 +1137,7 @@ QTreeWidget::item:selected {
         self.frame_lookup = {}
         self.timeline_widgets = {}
         fps = self.fps_spin.value()
-        mult = 2 ** len(self.process_chain)
+        mult = self.node_graph.calculate_frame_multiplier()
         global_idx = 0
         current_mask_frames = set()
         if self.current_mask_index is not None:
@@ -1125,8 +1261,7 @@ QTreeWidget::item:selected {
 
     def calculate_total_frames(self):
         initial_frames = sum(len(batch.frames) for batch in self.project.batches)
-        n = len(self.process_chain)
-        multiplier = 2 ** n
+        multiplier = self.node_graph.calculate_frame_multiplier()
         return initial_frames * multiplier
 
     def update_total_frames_ui(self, new_chain):
@@ -1217,9 +1352,8 @@ QTreeWidget::item:selected {
         if not frames:
             self.prerender_frames, self.prerender_source_frame_ids = [], []
             return
-        depth = len(self.process_chain)
-        self.prerender_frames = self.processor.process_sequence_fast_cv(frames, depth)
-        stride = 2 ** depth if depth > 0 else 1
+        self.prerender_frames = self.processor.process_sequence_with_graph(frames, self.node_graph)
+        stride = self.node_graph.calculate_frame_multiplier()
         self.prerender_source_frame_ids = [ids[min(len(ids)-1, i // stride)] for i in range(len(self.prerender_frames))]
 
     def get_current_playback_frame_id(self):
@@ -1505,13 +1639,12 @@ QTreeWidget::item:selected {
         if not frames:
             return
 
-        pipeline = self.process_chain
         save_path, _ = QFileDialog.getSaveFileName(self, "Экспорт", "output.mp4", "Video (*.mp4)")
         if not save_path:
             return
 
         self.global_progress.setValue(0)
-        final_frames = self.processor.process_sequence(frames, pipeline)
+        final_frames = self.processor.process_sequence_with_graph(frames, self.node_graph)
         h, w, _ = final_frames[0].shape
         out = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), float(self.fps_spin.value()), (w, h))
         total = len(final_frames)
