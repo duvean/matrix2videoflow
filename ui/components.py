@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QFileDialog, QSplitter, QGroupBox, QFormLayout, QSpinBox, QToolButton, QStyle, QFrame,
     QAbstractItemView, QSizePolicy, QStackedWidget, QMenu, QListWidgetItem, QProgressBar, QMessageBox,
     QTreeWidget, QTreeWidgetItem, QGraphicsView, QGraphicsScene, QGraphicsRectItem, QGraphicsTextItem,
-    QApplication, QSpacerItem, QSlider
+    QApplication, QSpacerItem, QSlider, QStyleFactory
 )
 from PySide6.QtGui import QImage, QPixmap, QDrag, QAction, QPainter, QPen, QColor, QBrush, QFont, QScreen
 from PySide6.QtCore import Qt, QMimeData, QEvent, QTimer, QPointF, QRectF, Signal, QPoint
@@ -547,12 +547,25 @@ class MainWindow(QMainWindow):
             QProgressBar::chunk{background:#22c55e;border-radius:0px;}
             QSplitter::handle{background-color: #0b1220;width: 6px;}
             
-            QTreeWidget {background-color: #111827;border: 1px solid;border-radius:0px;color: #e5e7eb;outline: none;}
-            QTreeWidget::item {padding: 6px;border-radius:0px;}
-            QTreeWidget::item:selected {background-color: #1f2937; /* Используем тот же цвет, что в QPushButton:hover */color: #ffffff;border: 1px solid;}
-            QTreeWidget::item:hover {background-color: #1a2234;}
-            QTreeWidget::item:selected:hover {background-color: #b677b6;}
-            QTreeWidget::header {background-color: #1f2937;color: #e5e7eb;border: none;}
+QTreeWidget {
+    background-color: #0f172a;
+    border: 1px solid;
+    border-radius: 0px;
+    padding: 10px;
+    font-family: 'Consolas', 'Monaco', 'Courier New';
+    font-size: 14px;
+    show-decoration-selected: 1;
+}
+
+QTreeWidget::item {
+    padding: 4px;
+    color: #94a3b8;
+}
+
+QTreeWidget::item:selected {
+    background-color: #1e293b;
+    color: #e2e8f0;
+}
             
             QListWidget {background: #0f172a;border: none;outline: none;padding: 5px;}
             QListWidget::item {background: transparent;border: none;margin-bottom: 4px;}
@@ -592,7 +605,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(10, 0, 10, 0)
         layout.setSpacing(8)
 
-        title_label = QLabel("Batch Video Studio")
+        title_label = QLabel("Batchframe Studio")
         title_label.setStyleSheet("color: #64748b; font-weight: bold; padding-left: 5px;")
         layout.addWidget(title_label)
         layout.addStretch()
@@ -636,11 +649,11 @@ class MainWindow(QMainWindow):
         w = QWidget()
         l = QVBoxLayout(w)
         l.setAlignment(Qt.AlignCenter)
-        title = QLabel("Batch Video Studio")
+        title = QLabel("Batchframe Studio")
         title.setStyleSheet("font-size:32px;font-weight:bold;")
         l.addWidget(title)
-        for size in [2, 3, 4]:
-            b = QPushButton(f"Create {size}x{size} Project")
+        for size in [1, 2, 3, 4]:
+            b = QPushButton(f"Create new {size}x{size} Project")
             b.clicked.connect(lambda _, s=size: self.start_new_project(s))
             l.addWidget(b)
         return w
@@ -769,7 +782,12 @@ class MainWindow(QMainWindow):
         lib_group = QGroupBox("Processor Library")
         lgl = QVBoxLayout(lib_group)
         self.explorer_tree = QTreeWidget()
+        self.explorer_tree.setIndentation(20)
+        self.explorer_tree.setAnimated(True)
         self.explorer_tree.setHeaderHidden(True)
+        self.explorer_tree.setStyle(QStyleFactory.create("Fusion"))
+        self.explorer_tree.setRootIsDecorated(True)
+        self.explorer_tree.setItemsExpandable(True)
         self.populate_explorer_tree()
         self.explorer_tree.itemDoubleClicked.connect(self.on_explorer_item_activated)
         lgl.addWidget(self.explorer_tree)
@@ -857,24 +875,46 @@ class MainWindow(QMainWindow):
 
     def populate_explorer_tree(self):
         self.explorer_tree.clear()
-        interp = QTreeWidgetItem(["interpolation"])
-        interp.addChild(QTreeWidgetItem(["cv"]))
-        interp.addChild(QTreeWidgetItem(["film"]))
-        upscalers = QTreeWidgetItem(["upscalers"])
-        self.explorer_tree.addTopLevelItem(interp)
-        self.explorer_tree.addTopLevelItem(upscalers)
-        self.explorer_tree.expandAll()
+        self.explorer_tree.setIndentation(20)  # Отступ веток
 
-    def on_explorer_item_activated(self, item, _):
+        # Root
+        root = QTreeWidgetItem(self.explorer_tree, ["Folders"])
+
+        # Branch 1
+        interp = QTreeWidgetItem(root, ["Interpolation"])
+        QTreeWidgetItem(interp, ["CV"])
+        QTreeWidgetItem(interp, ["RIFE"])
+        QTreeWidgetItem(interp, ["FILM"])
+
+        # Branch 2
+        upscalers = QTreeWidgetItem(root, ["Upscalers"])
+        QTreeWidgetItem(upscalers, ["Enhance AI"])
+        QTreeWidgetItem(upscalers, ["Super Resolution"])
+
+        # Branch 3
+        QTreeWidgetItem(root, ["Other Categories"])
+
+        root.setExpanded(True)
+        interp.setExpanded(True)
+        upscalers.setExpanded(True)
+
+    def on_explorer_item_activated(self, item, column):
+        leaf = item.text(0).lower()
         parent = item.parent()
-        if not parent:
-            return
-        folder = parent.text(0)
-        leaf = item.text(0)
-        if folder == "interpolation" and leaf in ("cv", "film"):
-            self.process_chain.append(leaf)
-            self.graph_view.rebuild_pipeline(self.process_chain)
-            self.invalidate_prerender()
+        if not parent: return
+
+        folder = parent.text(0).lower()
+
+        if folder == "interpolation":
+            if leaf in ("cv", "rife", "film"):
+                print(f"Добавляем в цепочку: {leaf}")
+                self.process_chain.append(leaf)
+                self.graph_view.rebuild_pipeline(self.process_chain)
+                self.invalidate_prerender()
+
+        elif folder == "upscalers":
+            # TODO Когда добавятся апскейлеры
+            print(f"Выбран апскейлер: {leaf}")
 
     def start_new_project(self, size):
         self.grid_size = size

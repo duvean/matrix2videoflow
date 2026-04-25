@@ -85,23 +85,7 @@ class VideoProcessor(QObject):
         self.inpainter = LamaInpainter()
 
     def _resolve_local_film_path(self):
-        models_dir = Path(__file__).resolve().parent / "models"
-        tar_path = models_dir / "film-tensorflow2-film-v1.tar.gz"
-        extract_dir = models_dir / "film-tensorflow2-film-v1"
-
-        if not tar_path.exists():
-            return None
-
-        if not extract_dir.exists():
-            extract_dir.mkdir(parents=True, exist_ok=True)
-            with tarfile.open(tar_path, "r:gz") as tfh:
-                tfh.extractall(extract_dir)
-
-        # Find a folder that looks like saved model root
-        for candidate in [extract_dir, *extract_dir.iterdir()]:
-            if candidate.is_dir() and (candidate / "saved_model.pb").exists():
-                return candidate
-        return extract_dir
+        return (Path(__file__).resolve().parent / "models")
 
     def load_model(self):
         try:
