@@ -141,19 +141,36 @@ class VideoProcessor(QObject):
     def apply_step(self, current_frames, step):
         if not current_frames:
             return []
-        if step in ('film', 'cv'):
+        step_name = step
+        params = {}
+        if isinstance(step, dict):
+            step_name = step.get("type")
+            params = step.get("params", {}) or {}
+        if step_name in ('film', 'cv'):
             new_sequence = []
             for i in range(len(current_frames) - 1):
                 f1 = current_frames[i]
                 f2 = current_frames[i + 1]
-                mid = self.interpolate_film(f1, f2) if step == 'film' else self.interpolate_opencv(f1, f2)
+                mid = self.interpolate_film(f1, f2) if step_name == 'film' else self.interpolate_opencv(f1, f2)
                 new_sequence.append(f1)
                 new_sequence.append(mid)
             new_sequence.append(current_frames[-1])
             return new_sequence
-        if step == "pixel_sort":
+        if step_name == "pixel_sort":
             total = max(1, len(current_frames) - 1)
-            return [self.pixel_sort_frame(frame, i / total) for i, frame in enumerate(current_frames)]
+            threshold = float(params.get("threshold", 0.45))
+            direction = params.get("direction", "horizontal")
+            strength = float(params.get("strength", 0.8))
+            return [
+                self.pixel_sort_frame(
+                    frame,
+                    i / total,
+                    threshold=threshold,
+                    direction=direction,
+                    strength=strength,
+                )
+                for i, frame in enumerate(current_frames)
+            ]
         return current_frames
 
     def process_sequence_with_graph(self, frames, graph_manager):

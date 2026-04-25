@@ -7,7 +7,8 @@ from PySide6.QtWidgets import (
     QFileDialog, QSplitter, QGroupBox, QFormLayout, QSpinBox, QToolButton, QStyle, QFrame,
     QAbstractItemView, QSizePolicy, QStackedWidget, QMenu, QListWidgetItem, QProgressBar, QMessageBox,
     QTreeWidget, QTreeWidgetItem, QGraphicsView, QGraphicsScene, QGraphicsRectItem, QGraphicsTextItem,
-    QApplication, QSpacerItem, QSlider, QStyleFactory, QDialog, QGraphicsLineItem
+    QApplication, QSpacerItem, QSlider, QStyleFactory, QDialog, QGraphicsLineItem, QGraphicsEllipseItem,
+    QGraphicsPathItem, QGraphicsProxyWidget, QDoubleSpinBox, QComboBox, QCheckBox
 )
 from PySide6.QtGui import QImage, QPixmap, QDrag, QAction, QPainter, QPen, QColor, QBrush, QFont, QScreen, QPainterPath
 from PySide6.QtCore import Qt, QMimeData, QEvent, QTimer, QPointF, QRectF, Signal, QPoint
@@ -184,27 +185,135 @@ class MaskPreviewLabel(QLabel):
 
 
 class GraphNodeItem(QGraphicsRectItem):
-    def __init__(self, node_id, label, color):
-        super().__init__(0, 0, 150, 56)
-        self.node_id = node_id
-        self.label = label
-        self.setBrush(QBrush(QColor(color)))
-        self.setPen(QPen(QColor("#64748b"), 1.2))
+    def __init__(self, node, on_toggle_enabled, on_param_change):
+        inputs_count = len(node.definition.inputs)
+        outputs_count = len(node.definition.outputs)
+        body_height = max(inputs_count, outputs_count) * 24 + 68
+        params_height = 86 if node.definition.type_name == "pixel_sort" else 0
+        super().__init__(0, 0, 240, body_height + params_height)
+        self.node_id = node.node_id
+        self.node = node
+        self._on_toggle_enabled = on_toggle_enabled
+        self._on_param_change = on_param_change
+        self.port_items = []
+
+        self.setBrush(QBrush(QColor("#0f172a")))
+        self.setPen(QPen(QColor("#4b5563"), 1.3))
         self.setFlag(QGraphicsRectItem.ItemIsMovable, True)
         self.setFlag(QGraphicsRectItem.ItemIsSelectable, True)
 
-        self.txt = QGraphicsTextItem(label, self)
-        self.txt.setDefaultTextColor(QColor("#e5e7eb"))
-        self.txt.setPos(12, 15)
+        title = QGraphicsTextItem(node.definition.title, self)
+        title.setDefaultTextColor(QColor("#f8fafc"))
+        title.setPos(14, 8)
+
+        accent = QGraphicsRectItem(12, 30, 216, 4, self)
+        accent.setBrush(QBrush(QColor(node.definition.color)))
+        accent.setPen(Qt.NoPen)
+
+        self._add_toggle()
+        self._build_ports(50)
+        if node.definition.type_name == "pixel_sort":
+            self._add_pixel_sort_controls(body_height + 6)
+
+    def _add_toggle(self):
+        if self.node.definition.type_name in ("input", "output"):
+            return
+        cb = QCheckBox("Bypass")
+        cb.setChecked(not self.node.enabled)
+        cb.setStyleSheet("QCheckBox{color:#cbd5e1;font-size:11px;}")
+        cb.toggled.connect(lambda checked: self._on_toggle_enabled(self.node_id, not checked))
+        proxy = QGraphicsProxyWidget(self)
+        proxy.setWidget(cb)
+        proxy.setPos(150, 7)
+
+    def _build_ports(self, y_start):
+        for i, inp in enumerate(self.node.definition.inputs):
+            self.port_items.append(GraphPortItem(self.node_id, inp, False, self, y_start + i * 24))
+        for i, out in enumerate(self.node.definition.outputs):
+            self.port_items.append(GraphPortItem(self.node_id, out, True, self, y_start + i * 24))
+
+    def _add_pixel_sort_controls(self, y_pos):
+        threshold = QDoubleSpinBox()
+        threshold.setDecimals(2)
+        threshold.setRange(0.05, 0.95)
+        threshold.setSingleStep(0.05)
+        threshold.setValue(float(self.node.params.get("threshold", 0.45)))
+        threshold.valueChanged.connect(lambda v: self._on_param_change(self.node_id, "threshold", float(v)))
+
+        strength = QDoubleSpinBox()
+        strength.setDecimals(2)
+        strength.setRange(0.0, 1.0)
+        strength.setSingleStep(0.05)
+        strength.setValue(float(self.node.params.get("strength", 0.8)))
+        strength.valueChanged.connect(lambda v: self._on_param_change(self.node_id, "strength", float(v)))
+
+        direction = QComboBox()
+        direction.addItems(["horizontal", "vertical"])
+        direction.setCurrentText(self.node.params.get("direction", "horizontal"))
+        direction.currentTextChanged.connect(lambda t: self._on_param_change(self.node_id, "direction", t))
+
+        for w in (threshold, strength, direction):
+            w.setStyleSheet("background:#111827;color:#e5e7eb;border:1px solid #475569;padding:1px;")
+
+        t_lbl = QGraphicsTextItem("Threshold", self)
+        t_lbl.setDefaultTextColor(QColor("#93c5fd"))
+        t_lbl.setPos(14, y_pos + 1)
+        t_proxy = QGraphicsProxyWidget(self)
+        t_proxy.setWidget(threshold)
+        t_proxy.setPos(90, y_pos - 2)
+
+        s_lbl = QGraphicsTextItem("Strength", self)
+        s_lbl.setDefaultTextColor(QColor("#93c5fd"))
+        s_lbl.setPos(14, y_pos + 27)
+        s_proxy = QGraphicsProxyWidget(self)
+        s_proxy.setWidget(strength)
+        s_proxy.setPos(90, y_pos + 24)
+
+        d_lbl = QGraphicsTextItem("Direction", self)
+        d_lbl.setDefaultTextColor(QColor("#93c5fd"))
+        d_lbl.setPos(14, y_pos + 53)
+        d_proxy = QGraphicsProxyWidget(self)
+        d_proxy.setWidget(direction)
+        d_proxy.setPos(90, y_pos + 50)
+
+    def paint(self, painter, option, widget=None):
+        pen = QPen(QColor("#c084fc"), 2) if self.isSelected() else QPen(QColor("#4b5563"), 1.3)
+        painter.setPen(pen)
+        painter.setBrush(QBrush(QColor("#0b1220")))
+        painter.drawRoundedRect(self.rect(), 10, 10)
 
 
-class GraphEdgeItem(QGraphicsLineItem):
-    def __init__(self, src_id, dst_id):
+class GraphPortItem(QGraphicsEllipseItem):
+    def __init__(self, node_id, port_name, is_output, parent_node, y):
+        self.node_id = node_id
+        self.port_name = port_name
+        self.is_output = is_output
+        x = parent_node.rect().width() - 10 if is_output else -6
+        super().__init__(x, y, 12, 12, parent_node)
+        color = QColor("#60a5fa") if "time" not in port_name else QColor("#fbbf24")
+        self.setBrush(QBrush(color))
+        self.setPen(QPen(QColor("#e5e7eb"), 1))
+        self.setFlag(QGraphicsEllipseItem.ItemIsSelectable, True)
+        label = QGraphicsTextItem(port_name, parent_node)
+        label.setDefaultTextColor(QColor("#d1d5db"))
+        tx = x - 86 if is_output else x + 16
+        label.setPos(tx, y - 4)
+
+
+class GraphEdgeItem(QGraphicsPathItem):
+    def __init__(self, src_id, dst_id, src_port, dst_port):
         super().__init__()
         self.src_id = src_id
         self.dst_id = dst_id
+        self.src_port = src_port
+        self.dst_port = dst_port
         self.setPen(QPen(QColor("#a78bfa"), 2))
-        self.setFlag(QGraphicsLineItem.ItemIsSelectable, True)
+        self.setFlag(QGraphicsPathItem.ItemIsSelectable, True)
+
+    def paint(self, painter, option, widget=None):
+        pen = QPen(QColor("#f472b6"), 2.6) if self.isSelected() else QPen(QColor("#a78bfa"), 2)
+        painter.setPen(pen)
+        painter.drawPath(self.path())
 
 
 class ProcessGraphView(QGraphicsView):
@@ -218,6 +327,7 @@ class ProcessGraphView(QGraphicsView):
         self.setRenderHints(QPainter.Antialiasing)
         self.setMinimumHeight(230)
         self.node_items = {}
+        self.port_items = {}
         self.edge_items = []
         self.connect_start = None
         self._is_panning = False
@@ -230,6 +340,7 @@ class ProcessGraphView(QGraphicsView):
     def clear_graph(self):
         self.scene.clear()
         self.node_items = {}
+        self.port_items = {}
         self.edge_items = []
         self.connect_start = None
 
@@ -251,43 +362,48 @@ class ProcessGraphView(QGraphicsView):
     def rebuild_graph(self):
         self.clear_graph()
         for node_id, node in self.graph_manager.nodes.items():
-            item = GraphNodeItem(node_id, node.definition.title, node.definition.color)
+            item = GraphNodeItem(node, self.on_node_enabled_changed, self.on_node_param_changed)
             item.setPos(node.pos[0], node.pos[1])
             self.scene.addItem(item)
             self.node_items[node_id] = item
+            for port in item.port_items:
+                self.port_items[(port.node_id, port.port_name, port.is_output)] = port
 
         for edge in self.graph_manager.edges:
-            self.add_edge_item(edge.src_id, edge.dst_id)
+            self.add_edge_item(edge.src_id, edge.dst_id, edge.src_port, edge.dst_port)
         self.scene.setSceneRect(self.scene.itemsBoundingRect().adjusted(-20, -20, 40, 40))
         self.pipeline_changed.emit(self.graph_manager.list_processing_steps())
 
-    def add_edge_item(self, src_id, dst_id):
-        src = self.node_items.get(src_id)
-        dst = self.node_items.get(dst_id)
+    def add_edge_item(self, src_id, dst_id, src_port, dst_port):
+        src = self.port_items.get((src_id, src_port, True))
+        dst = self.port_items.get((dst_id, dst_port, False))
         if not src or not dst:
             return
 
-        sx = src.scenePos().x() + src.rect().width()
-        sy = src.scenePos().y() + src.rect().height() / 2
-        dx = dst.scenePos().x()
-        dy = dst.scenePos().y() + dst.rect().height() / 2
-
-        edge_item = GraphEdgeItem(src_id, dst_id)
-        edge_item.setLine(sx, sy, dx, dy)
+        sp = src.sceneBoundingRect().center()
+        dp = dst.sceneBoundingRect().center()
+        c1 = QPointF(sp.x() + 80, sp.y())
+        c2 = QPointF(dp.x() - 80, dp.y())
+        path = QPainterPath(sp)
+        path.cubicTo(c1, c2, dp)
+        edge_item = GraphEdgeItem(src_id, dst_id, src_port, dst_port)
+        edge_item.setPath(path)
         self.scene.addItem(edge_item)
         self.edge_items.append(edge_item)
 
     def refresh_edges(self):
         for edge in self.edge_items:
-            src = self.node_items.get(edge.src_id)
-            dst = self.node_items.get(edge.dst_id)
+            src = self.port_items.get((edge.src_id, edge.src_port, True))
+            dst = self.port_items.get((edge.dst_id, edge.dst_port, False))
             if not src or not dst:
                 continue
-            sx = src.scenePos().x() + src.rect().width()
-            sy = src.scenePos().y() + src.rect().height() / 2
-            dx = dst.scenePos().x()
-            dy = dst.scenePos().y() + dst.rect().height() / 2
-            edge.setLine(sx, sy, dx, dy)
+            sp = src.sceneBoundingRect().center()
+            dp = dst.sceneBoundingRect().center()
+            c1 = QPointF(sp.x() + 80, sp.y())
+            c2 = QPointF(dp.x() - 80, dp.y())
+            path = QPainterPath(sp)
+            path.cubicTo(c1, c2, dp)
+            edge.setPath(path)
 
     def mousePressEvent(self, event):
         item = self.itemAt(event.pos())
@@ -297,15 +413,21 @@ class ProcessGraphView(QGraphicsView):
             self.setCursor(Qt.ClosedHandCursor)
             return
         if event.button() == Qt.RightButton and isinstance(item, GraphEdgeItem):
-            self.graph_manager.remove_edge(item.src_id, item.dst_id)
+            self.graph_manager.remove_edge(item.src_id, item.dst_id, item.src_port, item.dst_port)
             self.rebuild_graph()
             return
-        if event.button() == Qt.LeftButton and isinstance(item, GraphNodeItem):
+        if event.button() == Qt.LeftButton and isinstance(item, GraphPortItem):
             if self.connect_start is None:
-                self.connect_start = item.node_id
+                if item.is_output:
+                    self.connect_start = item
             else:
-                if self.connect_start != item.node_id:
-                    self.graph_manager.add_edge(self.connect_start, item.node_id)
+                if (not item.is_output) and (self.connect_start.node_id != item.node_id):
+                    self.graph_manager.add_edge(
+                        self.connect_start.node_id,
+                        item.node_id,
+                        self.connect_start.port_name,
+                        item.port_name,
+                    )
                     self.rebuild_graph()
                 self.connect_start = None
         super().mousePressEvent(event)
@@ -346,7 +468,7 @@ class ProcessGraphView(QGraphicsView):
                     self.graph_manager.remove_node(item.node_id)
                     removed = True
                 if isinstance(item, GraphEdgeItem):
-                    self.graph_manager.remove_edge(item.src_id, item.dst_id)
+                    self.graph_manager.remove_edge(item.src_id, item.dst_id, item.src_port, item.dst_port)
                     removed = True
             if removed:
                 self.rebuild_graph()
@@ -378,18 +500,17 @@ class ProcessGraphView(QGraphicsView):
         self.rebuild_graph()
 
     def add_processor_node(self, node_type):
-        node_id = self.graph_manager.add_node(node_type, (80, 120))
-        output_id = self.graph_manager.find_by_type("output")
-        pipeline_nodes = self.graph_manager.ordered_pipeline_nodes()
-        prev = self.graph_manager.find_by_type("input")
-        if pipeline_nodes:
-            prev = pipeline_nodes[-1]
-        if prev and output_id:
-            self.graph_manager.remove_edge(prev, output_id)
-            self.graph_manager.add_edge(prev, node_id)
-            self.graph_manager.add_edge(node_id, output_id)
-        self.graph_manager.auto_layout()
+        center_scene = self.mapToScene(self.viewport().rect().center())
+        self.graph_manager.add_node(node_type, (center_scene.x(), center_scene.y()))
         self.rebuild_graph()
+
+    def on_node_enabled_changed(self, node_id, enabled):
+        self.graph_manager.set_node_enabled(node_id, enabled)
+        self.pipeline_changed.emit(self.graph_manager.list_processing_steps())
+
+    def on_node_param_changed(self, node_id, key, value):
+        self.graph_manager.set_node_param(node_id, key, value)
+        self.pipeline_changed.emit(self.graph_manager.list_processing_steps())
 
 
 class TimelineFrame(QFrame):
@@ -1268,6 +1389,7 @@ QTreeWidget::item:selected {
         self.process_chain = new_chain
         total = self.calculate_total_frames()
         self.frames_count_lbl.setText(str(total))
+        self.invalidate_prerender()
 
     def replace_frame(self, b_idx, f_idx, img):
         if img is None:
