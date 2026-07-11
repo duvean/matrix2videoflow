@@ -22,12 +22,15 @@ class GraphNode:
     definition: NodeDefinition
     params: Dict[str, Any] = field(default_factory=dict)
     pos: Tuple[float, float] = (0.0, 0.0)
+    enabled: bool = True
 
 
 @dataclass
 class GraphEdge:
     src_id: str
     dst_id: str
+    src_port: str = "frame"
+    dst_port: str = "frame"
 
 
 class NodeGraphManager:
@@ -49,14 +52,10 @@ class NodeGraphManager:
             NodeDefinition("output", "OUTPUT", "Core", "#334155", inputs=("frame",), outputs=())
         )
         self.register(
-            NodeDefinition(
-                "cv", "CV Interpolate", "Interpolation", "#1d4ed8", frame_multiplier=2
-            )
+            NodeDefinition("cv", "CV Interpolate", "Interpolation", "#1d4ed8", frame_multiplier=2)
         )
         self.register(
-            NodeDefinition(
-                "film", "FILM Interpolate", "Interpolation", "#0f766e", frame_multiplier=2
-            )
+            NodeDefinition("film", "FILM Interpolate", "Interpolation", "#0f766e", frame_multiplier=2)
         )
         self.register(
             NodeDefinition(
@@ -64,6 +63,8 @@ class NodeGraphManager:
                 "Pixel Sort",
                 "Experimental",
                 "#7c3aed",
+                inputs=("frame", "time"),
+                outputs=("frame",),
                 default_params={"threshold": 0.45, "direction": "horizontal", "strength": 0.8},
             )
         )
@@ -72,9 +73,9 @@ class NodeGraphManager:
         )
 
     def _bootstrap_graph(self):
-        input_id = self.add_node("input", (20, 40))
-        output_id = self.add_node("output", (320, 40))
-        self.add_edge(input_id, output_id)
+        input_id = self.add_node("input", (40, 40))
+        output_id = self.add_node("output", (340, 40))
+        self.add_edge(input_id, output_id, "frame", "frame")
 
     def register(self, definition: NodeDefinition):
         self.registry[definition.type_name] = definition
@@ -83,7 +84,7 @@ class NodeGraphManager:
         definition = self.registry[type_name]
         node_id = f"n{self._next_id}"
         self._next_id += 1
-        self.nodes[node_id] = GraphNode(node_id, definition, dict(definition.default_params), pos)
+        self.nodes[node_id] = GraphNode(node_id, definition, dict(definition.default_params), pos, enabled=True)
         return node_id
 
     def remove_node(self, node_id: str):
@@ -94,17 +95,47 @@ class NodeGraphManager:
         self.nodes.pop(node_id)
         self.edges = [e for e in self.edges if e.src_id != node_id and e.dst_id != node_id]
 
-    def add_edge(self, src_id: str, dst_id: str):
+    def set_node_enabled(self, node_id: str, enabled: bool):
+        if node_id in self.nodes:
+            self.nodes[node_id].enabled = enabled
+
+    def set_node_param(self, node_id: str, key: str, value: Any):
+        if node_id in self.nodes:
+            self.nodes[node_id].params[key] = value
+
+    def add_edge(self, src_id: str, dst_id: str, src_port: str = "frame", dst_port: str = "frame"):
         if src_id == dst_id:
             return
-        if src_id not in self.nodes or dst_id not in self.nodes:
+        src = self.nodes.get(src_id)
+        dst = self.nodes.get(dst_id)
+        if not src or not dst:
             return
-        if any(e.src_id == src_id and e.dst_id == dst_id for e in self.edges):
+        if src_port not in src.definition.outputs or dst_port not in dst.definition.inputs:
             return
-        self.edges.append(GraphEdge(src_id, dst_id))
+        if any(
+            e.src_id == src_id and e.dst_id == dst_id and e.src_port == src_port and e.dst_port == dst_port
+            for e in self.edges
+        ):
+            return
+        # one input port = one source
+        self.edges = [
+            e
+            for e in self.edges
+            if not (e.dst_id == dst_id and e.dst_port == dst_port)
+        ]
+        self.edges.append(GraphEdge(src_id, dst_id, src_port, dst_port))
 
-    def remove_edge(self, src_id: str, dst_id: str):
-        self.edges = [e for e in self.edges if not (e.src_id == src_id and e.dst_id == dst_id)]
+    def remove_edge(self, src_id: str, dst_id: str, src_port: Optional[str] = None, dst_port: Optional[str] = None):
+        def _keep(e: GraphEdge):
+            if not (e.src_id == src_id and e.dst_id == dst_id):
+                return True
+            if src_port is not None and e.src_port != src_port:
+                return True
+            if dst_port is not None and e.dst_port != dst_port:
+                return True
+            return False
+
+        self.edges = [e for e in self.edges if _keep(e)]
 
     def update_node_position(self, node_id: str, x: float, y: float):
         if node_id in self.nodes:
@@ -136,17 +167,20 @@ class NodeGraphManager:
         for nid, l in layers.items():
             grouped.setdefault(l, []).append(nid)
 
-        x_gap, y_gap = 230, 100
+        x_gap, y_gap = 260, 170
         for l, node_ids in grouped.items():
             node_ids.sort()
             for i, nid in enumerate(node_ids):
                 self.update_node_position(nid, 40 + l * x_gap, 40 + i * y_gap)
 
-    def calculate_frame_multiplier(self) -> int:
-        mult = 1
-        for nid in self.ordered_pipeline_nodes():
-            mult *= max(1, self.nodes[nid].definition.frame_multiplier)
-        return mult
+    def _next_frame_node(self, node_id: str) -> Optional[str]:
+        outgoing = [
+            e for e in self.edges if e.src_id == node_id and e.src_port == "frame"
+        ]
+        if not outgoing:
+            return None
+        outgoing.sort(key=lambda e: self.nodes.get(e.dst_id).pos[0] if self.nodes.get(e.dst_id) else 0)
+        return outgoing[0].dst_id
 
     def ordered_pipeline_nodes(self) -> List[str]:
         input_id = self.find_by_type("input")
@@ -159,15 +193,21 @@ class NodeGraphManager:
         seen = set()
         while cur and cur not in seen:
             seen.add(cur)
-            next_edges = [e for e in self.edges if e.src_id == cur]
-            if not next_edges:
-                break
-            nxt = sorted(next_edges, key=lambda e: e.dst_id)[0].dst_id
-            if nxt == output_id:
+            nxt = self._next_frame_node(cur)
+            if not nxt or nxt == output_id:
                 break
             ordered.append(nxt)
             cur = nxt
         return ordered
+
+    def calculate_frame_multiplier(self) -> int:
+        mult = 1
+        for nid in self.ordered_pipeline_nodes():
+            node = self.nodes[nid]
+            if not node.enabled:
+                continue
+            mult *= max(1, node.definition.frame_multiplier)
+        return mult
 
     def find_by_type(self, type_name: str) -> Optional[str]:
         for nid, node in self.nodes.items():
@@ -175,5 +215,11 @@ class NodeGraphManager:
                 return nid
         return None
 
-    def list_processing_steps(self) -> List[str]:
-        return [self.nodes[nid].definition.type_name for nid in self.ordered_pipeline_nodes()]
+    def list_processing_steps(self) -> List[Dict[str, Any]]:
+        steps = []
+        for nid in self.ordered_pipeline_nodes():
+            node = self.nodes[nid]
+            if not node.enabled:
+                continue
+            steps.append({"node_id": nid, "type": node.definition.type_name, "params": dict(node.params)})
+        return steps
