@@ -1,0 +1,9 @@
+services:
+  tauri_ui:
+    build:
+      context: ./tauri-ui
+      dockerfile: Dockerfile
+    container_name: matrix2videoflow-tauri-ui
+    ports:
+      - "1420:1420"
+    restart: unless-stopped
